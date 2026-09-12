@@ -8,3 +8,5 @@ fixtures/*.parquet
 .env
 cache/
 fixtures/raw/*.graphml
+*.tmp.*
+*.py.tmp*
