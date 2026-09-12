@@ -242,9 +242,24 @@ class SmartPolicy:
 
     name: str = "smart"
 
-    def __init__(self, name: str | None = None) -> None:
+    def __init__(self, name: str | None = None, risk_posture: float = 1.0) -> None:
+        """`risk_posture` scales what the courier CHARGES for exposure --
+        night kilometres, wet pavement, and riding into believed congestion.
+
+        It is a preference, not a belief. Both postures see the same world
+        and hold the same estimates; they disagree on what that exposure is
+        worth. 0.0 is a courier who takes the jam head-on and prices only
+        the time it costs. Above 1.0 is one who would rather go around, or
+        work somewhere else entirely, and will give up money to do it.
+
+        This is the honest shape for the difference, and the reason is
+        worth stating: making the cautious courier *believe* the traffic is
+        worse would be modelling a worse courier, not a more careful one.
+        Same information, different risk appetite.
+        """
         if name:
             self.name = name
+        self.risk_posture = max(float(risk_posture), 0.0)
         self._memory = _ShiftMemory()
 
     # ------------------------------------------------------------------
@@ -589,7 +604,7 @@ class SmartPolicy:
         risk_mxn = 0.0
         night = model.night_factor(view.minute)
         if night > 0.0:
-            night_cost = km * SAFETY_CALIBRATION["night_risk_mxn_per_km"] * night
+            night_cost = km * SAFETY_CALIBRATION["night_risk_mxn_per_km"] * night * self.risk_posture
             risk_mxn += night_cost
             factors.append(
                 ScoreFactor(
@@ -598,9 +613,39 @@ class SmartPolicy:
                     note="riding after dark, weighted %.2f" % night,
                 )
             )
+        congestion = max(
+            model.believed_traffic_multiplier_at(offer.pickup_lat, offer.pickup_lon) - 1.0, 0.0
+        )
+        if congestion > 0.0 and self.risk_posture > 0.0:
+            jam_cost = (
+                km * SAFETY_CALIBRATION["congestion_aversion_mxn_per_km"]
+                * congestion * self.risk_posture
+            )
+            risk_mxn += jam_cost
+            factors.append(
+                ScoreFactor(
+                    label="Riding into the jam",
+                    delta_mxn=-jam_cost,
+                    note="believed congestion %.2fx on the way in; I would rather go around"
+                    % (congestion + 1.0),
+                )
+            )
+        heat = model.heat_exposure_factor()
+        if heat > 0.0 and self.risk_posture > 0.0:
+            heat_cost = (
+                km * SAFETY_CALIBRATION["heat_risk_mxn_per_km"] * heat * self.risk_posture
+            )
+            risk_mxn += heat_cost
+            factors.append(
+                ScoreFactor(
+                    label="Heat exposure premium",
+                    delta_mxn=-heat_cost,
+                    note="%.0f C apparent, weighted %.2f" % (beliefs.apparent_c.value, heat),
+                )
+            )
         rain = model.rain_risk_factor()
         if rain > 0.0:
-            rain_cost = km * SAFETY_CALIBRATION["rain_risk_mxn_per_km"] * rain
+            rain_cost = km * SAFETY_CALIBRATION["rain_risk_mxn_per_km"] * rain * self.risk_posture
             risk_mxn += rain_cost
             factors.append(
                 ScoreFactor(

@@ -134,7 +134,36 @@ class ForwardModel:
             SAFETY_CALIBRATION["rain_risk_full_mm"],
         )
 
+    def heat_exposure_factor(self) -> float:
+        """0 below the comfort threshold, ramping to 1 at the punishing end.
+
+        Heat is a physical cost, not a mood. Kept as a ramp rather than a
+        binary "extreme heat" flag so a courier can price 38 C differently
+        from 44 C, and read off this agent's own believed apparent
+        temperature, which it queries by coordinate -- so it transfers to
+        any city without knowing which one it is standing in.
+        """
+        return ramp(
+            self._beliefs.apparent_c.value,
+            SAFETY_CALIBRATION["heat_risk_onset_c"],
+            SAFETY_CALIBRATION["heat_risk_full_c"],
+        )
+
     # -- traffic and travel ----------------------------------------------
+
+    def believed_traffic_multiplier_at(self, lat: float, lon: float) -> float:
+        """Believed congestion at a COORDINATE, as a plain multiplier.
+
+        Takes lat/lon rather than a cell id on purpose: an `OfferCard`
+        carries coordinates, because that is what the app shows. Turning a
+        point into a cell is the agent's own job, through its own index --
+        so nothing here needs a cell vocabulary handed to it from outside.
+
+        `traffic()` returns the belief with its confidence attached; this is
+        the bare number, for a risk premium that must not re-weigh
+        confidence because the final score already discounts it once.
+        """
+        return self.traffic(self._index.nearest(lat, lon)).value
 
     def traffic(self, cell: str) -> Belief:
         estimate = self._beliefs.traffic_by_cell.get(cell)

@@ -869,8 +869,19 @@
   // the same honesty rule the map already applies to perceived events.
 
   function tripRowHTML(trip) {
-    const hours = trip.minutes / 60;
-    const rate = hours > 0 ? (trip.payout_mxn + trip.tip_mxn) / hours : 0;
+    // MXN/hour over the time the order actually OCCUPIED the courier --
+    // accepted_at_min to delivered_at_min -- and NOT over the paid delivery
+    // leg. Dividing by the leg alone ignores the ride TO the restaurant,
+    // the kitchen wait and the handover, which together are most of the
+    // work: it printed rows between 227 and 3789 MXN/h on a shift that
+    // earns about 100. Committed time gives 52 to 188, which reconciles
+    // with the shift-level figure a judge can see in the counter panel.
+    //
+    // Caveat, because these rows must not be added up: the agent queues an
+    // order while still riding another, so the committed windows overlap.
+    // The footer uses shift-level totals for exactly that reason.
+    const committedMin = Math.max(trip.delivered_at_min - trip.accepted_at_min, trip.minutes);
+    const rate = committedMin > 0 ? (trip.payout_mxn + trip.tip_mxn) / (committedMin / 60) : 0;
     const surgeHtml = trip.surge_locked > 1.0
       ? `<span class="trip-surge">${trip.surge_locked.toFixed(2)}x surge</span>` : "";
     return `
@@ -883,7 +894,8 @@
         <div class="trip-row-detail">
           <span>${(trip.payout_mxn + trip.tip_mxn).toFixed(2)} MXN</span>
           <span class="trip-km">${trip.km.toFixed(2)} km</span>
-          <span>${trip.minutes.toFixed(1)} min</span>
+          <span>${committedMin.toFixed(0)} min committed</span>
+          <span>${trip.minutes.toFixed(1)} min riding</span>
           <span>${trip.kitchen_wait_minutes.toFixed(1)} min kitchen wait</span>
           ${surgeHtml}
         </div>

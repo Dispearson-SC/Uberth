@@ -64,6 +64,41 @@ def great_circle_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a))
 
 
+# Mean distance between two points drawn uniformly at random inside a
+# regular hexagon, as a fraction of its edge length. A standard closed-form
+# result, not a fitted constant.
+HEXAGON_MEAN_POINT_DISTANCE_PER_EDGE = 0.8262
+
+
+def intra_cell_straight_line_km(resolution: int = H3_RESOLUTION) -> float:
+    """Expected straight-line distance of a trip that begins and ends in the
+    SAME cell.
+
+    This exists because the cell-to-cell travel matrix has a zero diagonal:
+    Dijkstra from a cell's centroid node to itself is 0 km and 0 minutes.
+    Left unpatched, that turns every order whose restaurant and customer
+    happen to fall in one cell into a free, instantaneous delivery — and a
+    policy that scores expected net MXN per hour will find those and take
+    nothing else, because a zero-cost trip has an unbounded rate.
+
+    That is exactly what happened. Measured on seed 42 before this fix: 6 of
+    the smart courier's 13 deliveries were 0.00 km and 1.0 minute, worth 29%
+    of its earnings, all in the last third of the shift. The 55-peso payout
+    floor took ZERO of them, because it never looks at geometry. So the
+    agent's headline advantage was partly a modelling artefact it had
+    learned to farm.
+
+    A resolution-7 cell is about 5.16 km^2, with a mean edge of 1.41 km. Two
+    random points inside it average 1.16 km apart. That is the honest
+    diagonal, and it is pure geometry: H3 covers the planet, so an agent can
+    derive this in any city without a local dataset.
+    """
+    import h3
+
+    edge_km = float(h3.average_hexagon_edge_length(resolution, unit="km"))
+    return HEXAGON_MEAN_POINT_DISTANCE_PER_EDGE * edge_km
+
+
 def latlon_to_cell(lat: float, lon: float, resolution: int = H3_RESOLUTION) -> str:
     """Map a lat/lon point to its H3 cell index. Does not require the
     operating cell catalog to exist — any point maps to a cell directly."""

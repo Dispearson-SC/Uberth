@@ -93,6 +93,55 @@ class TravelSkeleton:
             self, "_centroids", {cell: geo.cell_centroid(cell) for cell in self.cell_order}
         )
         object.__setattr__(self, "_nearest_memo", {})
+        object.__setattr__(self, "_intra_cell", self._derive_intra_cell_leg())
+
+    def _derive_intra_cell_leg(self) -> tuple[float, float]:
+        """(km, free-flow minutes) for a trip that begins and ends in one cell.
+
+        The diagonal of this matrix is zero -- Dijkstra from a cell's
+        centroid node to itself -- and a zero-cost leg is poison to a policy
+        that scores expected net MXN per hour, because its rate is unbounded.
+        The world had the same hole and it was measured: on seed 42, 6 of the
+        agent's 13 deliveries came back 0.00 km and 1.0 minute, 29% of its
+        earnings, while the payout-floor baseline took none of them. If the
+        world charges for a same-cell trip and the agent still believes it is
+        free, the agent keeps hunting them and keeps being wrong.
+
+        Everything here is derived from THIS skeleton plus H3, never from a
+        world constant: the expected straight-line distance inside a cell is
+        hexagon geometry, and both the road-vs-straight-line factor and the
+        free-flow speed are medians over this matrix's own off-diagonal
+        pairs. H3 covers the planet, so this transfers to any city.
+        """
+        n = len(self.cell_order)
+        straight_km = geo.intra_cell_straight_line_km()
+        if n < 2:
+            # Nothing to measure a factor against. Fall back to the straight
+            # line itself, which understates the trip but never zeroes it.
+            return straight_km, straight_km / 20.0 * 60.0
+
+        factors: list[float] = []
+        speeds: list[float] = []
+        centroids = self._centroids  # type: ignore[attr-defined]
+        for i, origin in enumerate(self.cell_order):
+            o_lat, o_lon = centroids[origin]
+            for j, dest in enumerate(self.cell_order):
+                if i == j:
+                    continue
+                km = float(self.distance_km[i, j])
+                minutes = float(self.free_flow_minutes[i, j])
+                if km != km or minutes != minutes or km <= 0.0 or minutes <= 0.0:
+                    continue
+                d_lat, d_lon = centroids[dest]
+                crow = geo.great_circle_km(o_lat, o_lon, d_lat, d_lon)
+                if crow > 0.0:
+                    factors.append(km / crow)
+                speeds.append(km / minutes * 60.0)
+
+        route_factor = float(np.median(factors)) if factors else 1.4
+        speed_kmh = float(np.median(speeds)) if speeds else 20.0
+        km = straight_km * route_factor
+        return km, km / max(speed_kmh, 1e-6) * 60.0
 
     # -- placing a coordinate on the skeleton ----------------------------
 
@@ -145,6 +194,9 @@ class TravelSkeleton:
         j = self._row.get(to_cell)  # type: ignore[attr-defined]
         if i is None or j is None:
             return None
+        if i == j:
+            # Never the zero diagonal. See `_derive_intra_cell_leg`.
+            return self._intra_cell  # type: ignore[attr-defined]
         km = float(self.distance_km[i, j])
         minutes = float(self.free_flow_minutes[i, j])
         if km != km or minutes != minutes:  # NaN: no route

@@ -379,6 +379,19 @@ SAFETY_CALIBRATION: dict[str, float] = {
     "night_ends_minute": 5 * 60,
     "day_full_minute": 7 * 60,
     # Rain is both slower and more dangerous.
+    # What a courier charges for riding INTO believed congestion, on top of
+    # the time it costs. The time cost is already priced by the travel
+    # model; this is the separate fact that a jam is miserable and
+    # dangerous on two wheels. Scaled by `SmartPolicy.risk_posture`, which
+    # is how one courier takes the jam head-on and another goes around.
+    "congestion_aversion_mxn_per_km": 0.60,
+    # Heat. 32 C is where a rider starts paying for it, 42 C the punishing
+    # end. Ramp, not a switch: 38 C and 44 C are not the same shift. These
+    # are human physiology, not a local climate table, which is why they
+    # are allowed to live inside the agent.
+    "heat_risk_mxn_per_km": 0.45,
+    "heat_risk_onset_c": 32.0,
+    "heat_risk_full_c": 42.0,
     "rain_risk_mxn_per_km": 0.25,
     "rain_risk_full_mm": 4.0,
 }

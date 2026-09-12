@@ -177,6 +177,16 @@ TRAVEL_CALIBRATION: dict[str, float] = {
     "unroutable_detour_km_multiplier": 1.3,  # a real detour is real extra distance
     "unroutable_detour_minutes_multiplier": 1.6,  # ...and usually slower per km too
     "fallback_speed_kmh": 20.0,  # last-resort straight-line speed assumption
+    # --- the matrix diagonal ---
+    # A same-cell trip is NOT zero distance. See
+    # `geo.intra_cell_straight_line_km` for why this matters and what it
+    # cost before it was fixed. The km is geometry; these two are knobs.
+    # The route factor is the measured mean over real legs (1.449); the
+    # speed is local streets rather than corridors, so it sits near the
+    # measured 03:00 city-wide free-flow reference of 21 km/h rather than
+    # the 47 km/h corridor mean.
+    "intra_cell_route_factor": 1.449,
+    "intra_cell_speed_kmh": 20.0,
 }
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,14 @@ from src.world.traffic import travel_time_minutes
 
 logger = logging.getLogger(__name__)
 
+# A same-cell trip, priced once at import rather than per query. The km is
+# H3 geometry times the measured mean route factor; the minutes are that
+# distance at local-street free-flow speed, which this module's traffic
+# multiplier then scales like any other leg.
+_INTRA_CELL_KM = geo.intra_cell_straight_line_km() * float(TRAVEL_CALIBRATION["intra_cell_route_factor"])
+_INTRA_CELL_MINUTES = _INTRA_CELL_KM / float(TRAVEL_CALIBRATION["intra_cell_speed_kmh"]) * 60.0
+
+
 
 @dataclass
 class NetworkTravelOracle:
@@ -155,6 +163,10 @@ class NetworkTravelOracle:
         evaluated at the ORIGIN cell) scales minutes only; km always comes
         straight from the matrix, unaffected by traffic.
 
+        A same-cell leg does NOT come from the matrix, whose diagonal is
+        zero, but from the intra-cell geometry estimate -- otherwise every
+        order that begins and ends in one cell is free.
+
         NEVER raises for an unroutable pair — see `_unroutable_fallback` and
         `calibration.TRAVEL_CALIBRATION`. A courier does not get to refuse a
         trip because the fastest-path graph momentarily disconnected."""
@@ -162,10 +174,18 @@ class NetworkTravelOracle:
         j = self._cell_row.get(to_cell)
         if i is None or j is None:
             raise KeyError(f"Unknown cell in travel query: {from_cell!r} -> {to_cell!r}")
-        base_km = float(self.matrix.distance_km[i, j])
-        base_minutes = float(self.matrix.time_min[i, j])
-        if base_km != base_km or base_minutes != base_minutes:  # NaN check, no numpy import needed
-            base_km, base_minutes = self._unroutable_fallback(i, j, from_cell, to_cell)
+        if i == j:
+            # The matrix diagonal is zero -- Dijkstra from a centroid node
+            # to itself. Handing that back makes every same-cell order a
+            # free, instantaneous delivery, and a policy scoring MXN per
+            # hour will farm exactly those. It did: see
+            # `geo.intra_cell_straight_line_km`.
+            base_km, base_minutes = _INTRA_CELL_KM, _INTRA_CELL_MINUTES
+        else:
+            base_km = float(self.matrix.distance_km[i, j])
+            base_minutes = float(self.matrix.time_min[i, j])
+            if base_km != base_km or base_minutes != base_minutes:  # NaN check, no numpy import needed
+                base_km, base_minutes = self._unroutable_fallback(i, j, from_cell, to_cell)
         tick = self.traffic_by_minute.get(minute)
         if tick is None:
             return base_km, base_minutes
