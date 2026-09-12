@@ -225,7 +225,10 @@
   }
   button:hover { border-color: var(--accent-smart); }
   #playBtn { min-width: 74px; font-weight: 700; }
-  #forkBtn { margin-left: auto; }
+  #scenarioBtn { margin-left: auto; }
+  #scenarioBtn.active { background: rgba(255,120,80,0.2); border-color: #ff7850; color: #ff7850; }
+  #forkBtn:disabled { opacity: 0.35; cursor: not-allowed; }
+  #forkBtn { margin-left: 8px; }
   #forkBtn.active { background: rgba(176,107,255,0.2); border-color: var(--accent-fork); color: var(--accent-fork); }
   #eventTicker { font-size: 11px; color: var(--warn); margin-left: 8px; }
 
@@ -301,6 +304,9 @@
         <option value="50">50x</option>
       </select>
       <span id="eventTicker"></span>
+      <button id="scenarioBtn" title="Swap both couriers into the harshest working day in the weather archive: 41.9 C, rain in the dinner peak, five street closures">
+        &#127786; Hostile day
+      </button>
       <button id="forkBtn" title="Swap the Smart courier's world for one with a street closure injected mid-shift">
         &#9889; Fork: inject street closure
       </button>
@@ -662,6 +668,11 @@
   // ==========================================================================
 
   const REPLAY_NAMES = ["reference_smart", "reference_fixed", "reference_fork"];
+  // The hostile-day pair from scripts/build_duel.py. OPTIONAL on purpose: the
+  // ordinary shift is what this dashboard exists to show, and a missing duel
+  // must never stop the page from opening. The scenario button simply does not
+  // appear when they are absent.
+  const DUEL_NAMES = ["duel_smart", "duel_floor"];
   const replays = {}; // name -> parsed document (post-index)
 
   function fileStatusHTML(have) {
@@ -679,10 +690,18 @@
         if (!res.ok) throw new Error("HTTP " + res.status);
         results[name] = await res.json();
       }));
-      return results;
     } catch (e) {
-      return null; // any failure -> fall back to manual loading
+      return null; // a missing REQUIRED file -> fall back to manual loading
     }
+    // The duel pair is fetched separately and its failure is swallowed: it is
+    // an extra scenario, not a dependency.
+    await Promise.all(DUEL_NAMES.map(async name => {
+      try {
+        const res = await fetch("../../replays/" + name + ".json");
+        if (res.ok) results[name] = await res.json();
+      } catch (e) { /* optional */ }
+    }));
+    return results;
   }
 
   function setupManualLoader(onReady) {
@@ -696,7 +715,10 @@
 
     function matchName(filename) {
       const lower = filename.toLowerCase();
-      return REPLAY_NAMES.find(n => lower.includes(n.replace("reference_", "")));
+      // Duel files first: "duel_smart" also contains "smart", so matching the
+      // reference names first would file it under the wrong lane.
+      return DUEL_NAMES.find(n => lower.includes(n))
+        || REPLAY_NAMES.find(n => lower.includes(n.replace("reference_", "")));
     }
 
     function handleFiles(fileList) {
@@ -738,11 +760,19 @@
   // 4. App state and rendering
   // ==========================================================================
 
-  const LANE_COLORS = { smart: "#4da3ff", fork: "#b06bff", fixed: "#ffb454" };
-  const LANE_LABELS = { smart: "SMART", fork: "SMART (fork: closure)", fixed: "FIXED THRESHOLD (55 MXN floor)" };
+  const LANE_COLORS = {
+    smart: "#4da3ff", fork: "#b06bff", fixed: "#ffb454",
+    duel_smart: "#4da3ff", duel_floor: "#ffb454",
+  };
+  const LANE_LABELS = {
+    smart: "SMART", fork: "SMART (fork: closure)", fixed: "FIXED THRESHOLD (55 MXN floor)",
+    duel_smart: "SMART (41.9 C, rain, 5 closures)",
+    duel_floor: "FIXED THRESHOLD (same hostile day)",
+  };
 
   const app = {
     laneADataset: "smart", // 'smart' | 'fork'
+    scenario: "normal", // 'normal' | 'hostile'
     currentMinute: 0,
     minMinute: 0,
     maxMinute: 0,
@@ -751,8 +781,15 @@
     mapView: null,
   };
 
-  function laneADoc() { return replays[app.laneADataset]; }
-  function laneBDoc() { return replays.fixed; }
+  // Both lanes move together when the scenario changes, because the point of
+  // the hostile day is that BOTH couriers face it. Showing one courier's
+  // storm against the other's clear afternoon would be the comparison this
+  // project has already had to correct once.
+  function laneAKey() { return app.scenario === "hostile" ? "duel_smart" : app.laneADataset; }
+  function laneBKey() { return app.scenario === "hostile" ? "duel_floor" : "fixed"; }
+  function laneADoc() { return replays[laneAKey()]; }
+  function laneBDoc() { return replays[laneBKey()]; }
+  function hasDuel() { return !!(replays.duel_smart && replays.duel_floor); }
 
   function recomputeRange() {
     const a = laneADoc(), b = laneBDoc();
@@ -766,8 +803,8 @@
   function renderCounters() {
     const el = document.getElementById("counters");
     const lanes = [
-      { key: "A", doc: laneADoc(), datasetKey: app.laneADataset, color: LANE_COLORS[app.laneADataset], label: LANE_LABELS[app.laneADataset] },
-      { key: "B", doc: laneBDoc(), datasetKey: "fixed", color: LANE_COLORS.fixed, label: LANE_LABELS.fixed },
+      { key: "A", doc: laneADoc(), datasetKey: app.laneADataset, color: LANE_COLORS[laneAKey()], label: LANE_LABELS[laneAKey()] },
+      { key: "B", doc: laneBDoc(), datasetKey: "fixed", color: LANE_COLORS[laneBKey()], label: LANE_LABELS[laneBKey()] },
     ];
     let html = "";
     const vals = {};
@@ -790,7 +827,7 @@
     if (b.km_traveled > 0 && b.earnings_mxn > 0) {
       const earnRatio = (a.earnings_mxn / b.earnings_mxn) * 100;
       const kmSaved = (1 - a.km_traveled / b.km_traveled) * 100;
-      headline = `So far, <b>${LANE_LABELS[app.laneADataset]}</b> has earned <b>${earnRatio.toFixed(0)}%</b> of ` +
+      headline = `So far, <b>${LANE_LABELS[laneAKey()]}</b> has earned <b>${earnRatio.toFixed(0)}%</b> of ` +
         `<b>fixed_threshold</b>'s money on <b>${kmSaved.toFixed(0)}%</b> less driving.`;
     }
     html += `<div id="headline">${headline}</div>`;
@@ -858,8 +895,8 @@
 
   function renderWhyPanel() {
     const lanes = [
-      { doc: laneADoc(), color: LANE_COLORS[app.laneADataset], label: LANE_LABELS[app.laneADataset] },
-      { doc: laneBDoc(), color: LANE_COLORS.fixed, label: LANE_LABELS.fixed },
+      { doc: laneADoc(), color: LANE_COLORS[laneAKey()], label: LANE_LABELS[laneAKey()] },
+      { doc: laneBDoc(), color: LANE_COLORS[laneBKey()], label: LANE_LABELS[laneBKey()] },
     ];
     document.getElementById("decisionCards").innerHTML = lanes.map(decisionCardHTML).join("");
   }
@@ -959,8 +996,8 @@
 
   function renderTripsPanel() {
     const lanes = [
-      { doc: laneADoc(), color: LANE_COLORS[app.laneADataset], label: LANE_LABELS[app.laneADataset] },
-      { doc: laneBDoc(), color: LANE_COLORS.fixed, label: LANE_LABELS.fixed },
+      { doc: laneADoc(), color: LANE_COLORS[laneAKey()], label: LANE_LABELS[laneAKey()] },
+      { doc: laneBDoc(), color: LANE_COLORS[laneBKey()], label: LANE_LABELS[laneBKey()] },
     ];
     document.getElementById("tripCards").innerHTML = lanes.map(tripCardHTML).join("");
   }
@@ -982,10 +1019,10 @@
       if (s) bTrail.push([s.lat, s.lon]);
     }
 
-    mv.setTrail("A", aTrail, LANE_COLORS[app.laneADataset]);
-    mv.setTrail("B", bTrail, LANE_COLORS.fixed);
-    mv.setCourier("A", aState.lat, aState.lon, LANE_COLORS[app.laneADataset], LANE_LABELS[app.laneADataset].split(" ")[0]);
-    mv.setCourier("B", bState.lat, bState.lon, LANE_COLORS.fixed, "FIXED");
+    mv.setTrail("A", aTrail, LANE_COLORS[laneAKey()]);
+    mv.setTrail("B", bTrail, LANE_COLORS[laneBKey()]);
+    mv.setCourier("A", aState.lat, aState.lon, LANE_COLORS[laneAKey()], LANE_LABELS[laneAKey()].split(" ")[0]);
+    mv.setCourier("B", bState.lat, bState.lon, LANE_COLORS[laneBKey()], "FIXED");
 
     // Pickup / dropoff markers within a trailing visibility window, so the
     // map does not fill up with every stop from eight hours ago.
@@ -1023,11 +1060,11 @@
   }
 
   function renderLegend() {
-    const laneAColor = LANE_COLORS[app.laneADataset];
-    const laneALabel = LANE_LABELS[app.laneADataset].split(" ")[0];
+    const laneAColor = LANE_COLORS[laneAKey()];
+    const laneALabel = LANE_LABELS[laneAKey()].split(" ")[0];
     document.getElementById("legend").innerHTML = `
       <div class="row"><span class="dot" style="background:${laneAColor}"></span>${laneALabel} courier</div>
-      <div class="row"><span class="dot" style="background:${LANE_COLORS.fixed}"></span>FIXED courier</div>
+      <div class="row"><span class="dot" style="background:${LANE_COLORS[laneBKey()]}"></span>FIXED courier</div>
       <div class="row"><span class="dot" style="background:#3ddc84;border-radius:2px;clip-path:polygon(50% 0,0 100%,100% 100%)"></span>Pickup (restaurant)</div>
       <div class="row"><span class="dot" style="background:#4da3ff;border-radius:2px"></span>Dropoff (customer)</div>
       <div class="row"><span class="dot" style="background:#ffcc4d"></span>Perceived world event</div>
@@ -1075,11 +1112,37 @@
       renderAll();
     });
     document.getElementById("forkBtn").addEventListener("click", () => {
+      if (app.scenario === "hostile") return;
       app.laneADataset = app.laneADataset === "smart" ? "fork" : "smart";
       document.getElementById("forkBtn").classList.toggle("active", app.laneADataset === "fork");
       recomputeRange();
       renderAll();
     });
+
+    const scenarioBtn = document.getElementById("scenarioBtn");
+    if (!hasDuel()) {
+      // No duel recorded. Hide the control rather than offer a dead button.
+      scenarioBtn.style.display = "none";
+    } else {
+      scenarioBtn.addEventListener("click", () => {
+        app.scenario = app.scenario === "normal" ? "hostile" : "normal";
+        const hostile = app.scenario === "hostile";
+        scenarioBtn.classList.toggle("active", hostile);
+        scenarioBtn.innerHTML = hostile ? "&#9728; Ordinary day" : "&#127786; Hostile day";
+        // The fork is a beat scripted into the ORDINARY day. There is no
+        // forked hostile recording, so the button is disabled rather than
+        // silently doing nothing.
+        const forkBtn = document.getElementById("forkBtn");
+        forkBtn.disabled = hostile;
+        if (hostile && app.laneADataset === "fork") {
+          app.laneADataset = "smart";
+          forkBtn.classList.remove("active");
+        }
+        setPlaying(false);
+        recomputeRange();
+        renderAll();
+      });
+    }
   }
 
   // ==========================================================================
@@ -1091,10 +1154,14 @@
       const key = name.replace("reference_", ""); // smart | fixed | fork
       replays[key] = indexReplay(rawDocs[name]);
     }
+    for (const name of DUEL_NAMES) {
+      if (rawDocs[name]) replays[name] = indexReplay(rawDocs[name]);
+    }
 
     document.getElementById("loadStatus").textContent =
       `Loaded: smart (${replays.smart.frames.length} min), fixed (${replays.fixed.frames.length} min), ` +
-      `fork (${replays.fork.frames.length} min) &middot; seed ${replays.smart.seed}`;
+      `fork (${replays.fork.frames.length} min) &middot; seed ${replays.smart.seed}` +
+      (hasDuel() ? ` &middot; hostile day loaded` : "");
 
     const useLeaflet = await waitForLeaflet(4000);
     if (useLeaflet) {
