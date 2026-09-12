@@ -10,3 +10,4 @@ pyproj>=3.7
 h3>=4.1
 pydantic>=2.9
 requests>=2.32
+pytest>=8.0
