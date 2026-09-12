@@ -63,6 +63,13 @@ class OfferCard:
     surge_flag: bool  # coarse and binary, never the real multiplier
     restaurant_name: str
     expires_in_seconds: int  # seconds to decide, the pressure in the brief
+    # Stable identifier for the branch, so a policy can join an offer against
+    # what it has learned about that kitchen. This leaks nothing: a courier
+    # plainly sees which branch they are being sent to, and remembering that
+    # this particular one is always slow is exactly the knowledge a good
+    # courier accumulates. Without it, `Observation.kitchen_minutes_by_denue_id`
+    # is unjoinable from an OfferCard and learned kitchen speed is unusable.
+    restaurant_denue_id: str = ""
 
 
 @dataclass(frozen=True)
