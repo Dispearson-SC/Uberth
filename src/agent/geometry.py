@@ -4,8 +4,10 @@ A courier can look at a map and judge that a pickup is "about four kilometres
 north". That is all this module does: great-circle distance, and matching a
 coordinate to the nearest cell of the in-app heatmap.
 
-The heatmap is the agent's only spatial index. It knows no other grid, cannot
-enumerate the city, and never learns a cell it has not been shown.
+The agent's spatial index is whatever its own tools name and place: the app's
+coarse heatmap cells, plus every cell `Observation.cell_coords` gives a
+coordinate for. It knows no other grid, cannot enumerate the city, and never
+places a cell it has not been told about.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ class CellIndex:
     levels: dict[str, int] = dataclasses_field(default_factory=dict)
 
     @classmethod
-    def from_heatmap(cls, heatmap, fallback_cell: str, learned=None) -> "CellIndex":
+    def from_heatmap(cls, heatmap, fallback_cell: str, cell_coords=None) -> "CellIndex":
         """Build the agent's spatial vocabulary for this minute.
 
         `heatmap` is what the app just showed: cell ids with coordinates.
@@ -52,17 +54,24 @@ class CellIndex:
         was scoring every offer at default traffic and default demand for an
         entire shift while believing it was reasoning about both.
 
-        `learned` closes that gap the only way the agent honestly can:
-        every minute, `Observation` tells the courier which cell they are
-        standing in AND where they are standing. Remembering those pairs
-        builds up real coordinates for the fine grid over the shift — a
-        courier learning their own city, one street at a time. Cells they
-        have never been to stay unknown, which is correct.
+        `cell_coords` is `Observation.cell_coords`, which closes that gap
+        outright: the courier's own tools name a cell and say where it is,
+        for every cell in either belief map. Somebody looking at the zones
+        on their own app knows where those zones are, so this is not
+        privileged information — and without it the traffic and demand
+        beliefs were unplaceable and therefore dead.
+
+        This replaced a workaround that learned the fine grid one cell at a
+        time, by remembering where the courier was standing each minute it
+        was told which cell that was. It was honest but weak exactly when it
+        mattered most: at the start of a shift the courier knew the
+        coordinates of precisely one cell, so every offer was still scored
+        against priors through the busiest part of the evening.
         """
         coordinates = {cell.cell: (cell.lat, cell.lon) for cell in heatmap}
         levels = {cell.cell: cell.level for cell in heatmap}
-        if learned:
-            coordinates.update(learned)
+        if cell_coords:
+            coordinates.update(cell_coords)
         return cls(coordinates=coordinates, fallback_cell=fallback_cell, levels=levels)
 
     def nearest(self, lat: float, lon: float) -> str:

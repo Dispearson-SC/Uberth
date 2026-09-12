@@ -93,13 +93,29 @@ class ForwardModel:
         )
 
     def night_factor(self, minute: int) -> float:
-        """0 in daylight, 1 deep at night. Minute is minute-of-day."""
-        minute_of_day = minute % (24 * 60)
-        return ramp(
-            float(minute_of_day),
-            SAFETY_CALIBRATION["night_starts_minute"],
-            SAFETY_CALIBRATION["night_full_minute"],
-        )
+        """0 in daylight, 1 deep at night. `minute` may be any absolute minute.
+
+        Night WRAPS, and that has to be said in code rather than assumed.
+        An earlier version was a single ramp over minute-of-day from
+        `night_starts_minute` to `night_full_minute`; at 00:00 the
+        minute-of-day reset to 0, dropped below the ramp's start, and the
+        premium went to zero — so on the Night window (18:00-02:00) the two
+        darkest hours of the shift, a quarter of it, were priced as broad
+        daylight. Invisible except as a bad result, which is what it was.
+
+        Four control points, in clock order: dusk, full dark, still dark,
+        full light. Everything between full dark and still dark crosses
+        midnight and is night at weight 1.
+        """
+        cal = SAFETY_CALIBRATION
+        minute_of_day = float(minute % (24 * 60))
+        if minute_of_day >= cal["night_starts_minute"]:
+            return ramp(minute_of_day, cal["night_starts_minute"], cal["night_full_minute"])
+        if minute_of_day <= cal["night_ends_minute"]:
+            return 1.0
+        if minute_of_day < cal["day_full_minute"]:
+            return 1.0 - ramp(minute_of_day, cal["night_ends_minute"], cal["day_full_minute"])
+        return 0.0
 
     def rain_risk_factor(self) -> float:
         return ramp(
@@ -179,10 +195,13 @@ class ForwardModel:
         cell; failing that, the level the app's heatmap shows over the point
         (lagged, coarse and quantised, but visible and locatable — see
         `HEATMAP_LEVEL_DEMAND`); failing that, a flat prior they barely
-        believe. The middle one matters more than it looks: the fine-grid
-        cell ids in `demand_by_cell` are ones the courier can only place by
-        having stood in them, so early in a shift the first source misses
-        almost everywhere.
+        believe.
+
+        The first source is the one that carries the shift now that
+        `Observation.cell_coords` places every cell in `demand_by_cell`.
+        Before it did, that lookup missed almost everywhere — the courier
+        could only place a fine-grid cell by having stood in it — and the
+        heatmap fallback was doing nearly all the work.
         """
         estimate = self._observation.demand_by_cell.get(cell)
         if estimate is not None:

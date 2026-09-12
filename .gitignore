@@ -1,7 +1,6 @@
 .venv/
 __pycache__/
 *.pyc
-Docs/
 fixtures/*.graphml
 fixtures/*.parquet
 .atl/
@@ -11,3 +10,10 @@ fixtures/raw/*.graphml
 *.tmp.*
 *.py.tmp*
 fixtures/raw/tomtom_monterrey_areaanalysis.json
+
+
+# Datasets stay out of git; documentation stays in. A trailing-slash
+# pattern cannot be negated from inside, hence Docs/* rather than Docs/.
+Docs/*
+!Docs/*.md
+!Docs/architecture/

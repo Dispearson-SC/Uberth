@@ -6,6 +6,8 @@ a real courier: deactivated for a low acceptance rate, or stranded dry.
 
 from __future__ import annotations
 
+import pytest
+
 from src.core.ports import Action
 from tests.agent.factories import make_offer, scenario
 
@@ -129,20 +131,118 @@ def test_refuelling_is_not_worth_it_in_the_last_minutes_of_the_shift() -> None:
     assert decision.action is not Action.REFUEL
 
 
-def test_it_repositions_towards_believed_demand_when_nothing_is_on_screen() -> None:
-    decision = SmartPolicy().decide(
-        *scenario(
-            minute=MINUTE_1900,
-            at_cell="MTY-C",
-            offers=(),
-            demand={"MTY-C": 0.02, "MTY-SC": 0.95, "MTY-N": 0.1},
-            minutes_left_in_shift=180,
-        )
-    )
+def _stand_in_a_dead_cell(policy: SmartPolicy, minutes: int):
+    """Stand still with an empty screen for `minutes`, returning each decision.
 
-    assert decision.action is Action.REPOSITION
-    assert decision.target_cell == "MTY-SC"
-    assert decision.trace.summary
+    Standing still is the precondition for moving: the policy will not ride
+    off a spot it has no evidence about, which is what stops the
+    repositioning branch turning into a shift-long loop.
+    """
+    decisions = []
+    for offset in range(minutes):
+        decisions.append(
+            policy.decide(
+                *scenario(
+                    minute=MINUTE_1900 + offset,
+                    at_cell="MTY-C",
+                    offers=(),
+                    demand={"MTY-C": 0.02, "MTY-SC": 0.95, "MTY-N": 0.1},
+                    minutes_left_in_shift=180 - offset,
+                )
+            )
+        )
+    return decisions
+
+
+def test_it_will_not_ride_off_a_spot_it_has_no_evidence_about_yet() -> None:
+    first = _stand_in_a_dead_cell(SmartPolicy(), 1)[0]
+
+    assert first.action is Action.HOLD
+    assert first.target_cell is None
+
+
+def test_it_repositions_towards_believed_demand_after_standing_in_a_dead_cell() -> None:
+    decisions = _stand_in_a_dead_cell(SmartPolicy(), 12)
+
+    moves = [d for d in decisions if d.action is Action.REPOSITION]
+    assert moves, "stood twelve minutes in a dead cell and never moved"
+    assert moves[0].target_cell == "MTY-SC"
+    assert moves[0].trace.summary
+
+
+def test_it_stops_asking_for_a_move_that_demonstrably_never_happens() -> None:
+    """A courier knows whether they actually got anywhere.
+
+    "Ride to that district" can name a place the courier then cannot set off
+    for, in which case nothing happens: same cell, same empty screen, same
+    decision next minute, for the rest of the shift. Measured before this
+    guard: 412 reposition decisions in a 540-minute shift, of which the
+    courier acted on none, 89% of it idle, two offers seen all morning.
+
+    Here the courier never moves no matter what it asks for, which is
+    exactly the situation the guard is for.
+    """
+    policy = SmartPolicy()
+    moves = []
+    for offset in range(60):
+        decision = policy.decide(
+            *scenario(
+                minute=MINUTE_1900 + offset,
+                at_cell="MTY-C",  # never actually goes anywhere
+                offers=(),
+                demand={"MTY-C": 0.02, "MTY-SC": 0.95, "MTY-N": 0.9},
+                minutes_left_in_shift=300 - offset,
+            )
+        )
+        if decision.action is Action.REPOSITION:
+            moves.append(decision.target_cell)
+
+    # It may ask once per plausible destination, then it has to stop: it has
+    # watched each instruction fail.
+    assert len(moves) <= 3, "asked to move %d times without ever moving: %s" % (
+        len(moves),
+        moves,
+    )
+    assert len(set(moves)) == len(moves), "asked twice for the same unreachable cell"
+
+
+def test_it_does_not_ride_in_circles_when_the_whole_city_reads_dead() -> None:
+    """The regression guard for a measured death spiral.
+
+    At 06:00 the sensed demand map reads "almost nothing" everywhere and is
+    re-drawn with fresh noise every minute, so whichever cell happened to
+    round up became the target — and a starved courier's measured wait is at
+    its clamp, which inflates every wait estimate enough to pay for a six
+    kilometre ride. Measured before the guards: 393 repositions in a
+    540-minute shift, 88% of it idle, two offers seen all morning, 7.6 MXN/h
+    where the same policy with the branch muted earned 84.7.
+
+    Here the courier is walked across cells exactly as a repositioning
+    courier would be, with demand flickering by one heatmap band. A policy
+    that moves on that is thrashing.
+    """
+    policy = SmartPolicy()
+    cells = ["MTY-C", "MTY-SC", "MTY-N", "MTY-E", "MTY-W"]
+    moves = 0
+    for offset in range(60):
+        here = cells[offset // 12 % len(cells)]
+        # Every cell reads "nothing", one flickers up a single band.
+        flicker = cells[(offset * 7) % len(cells)]
+        demand = {cell: 0.0 for cell in cells}
+        demand[flicker] = 0.25
+        decision = policy.decide(
+            *scenario(
+                minute=MINUTE_1900 + offset,
+                at_cell=here,
+                offers=(),
+                demand=demand,
+                minutes_left_in_shift=300 - offset,
+            )
+        )
+        if decision.action is Action.REPOSITION:
+            moves += 1
+
+    assert moves == 0, "moved %d times chasing one band of heatmap noise" % moves
 
 
 def test_it_does_not_chase_a_marginal_gain_across_the_city() -> None:
@@ -171,3 +271,52 @@ def test_night_risk_is_priced_into_a_long_ride() -> None:
     night_eval = night.trace.considered[0]
     assert night_eval.expected_net_mxn < day_eval.expected_net_mxn
     assert any("night" in f.label.lower() for f in night_eval.factors)
+
+
+def test_night_risk_does_not_switch_itself_off_at_midnight() -> None:
+    """The regression guard for an off-by-1440.
+
+    The premium used to be a single ramp over minute-of-day, so at 00:00 the
+    clock reset below the ramp's start and 01:00 was priced as broad
+    daylight. On the Night window (18:00-02:00) that exempted the last 120
+    of 480 minutes — a quarter of the shift, and the darkest quarter.
+
+    Absolute minute 1500 is 01:00 the next day: the window's minutes are a
+    continuous counter, so this is exactly what the policy is handed there.
+    """
+    policy = SmartPolicy()
+    offer = make_offer("LONG_RIDE", pickup_cell="MTY-C", dropoff_cell="MTY-FAR", payout_mxn=200.0)
+
+    deep_night = policy.decide(
+        *scenario(minute=23 * 60, offers=(offer,), minutes_left_in_shift=300)
+    )
+    after_midnight = policy.decide(
+        *scenario(minute=25 * 60, offers=(offer,), minutes_left_in_shift=300)
+    )
+
+    after_eval = after_midnight.trace.considered[0]
+    assert any("night" in f.label.lower() for f in after_eval.factors), (
+        "01:00 was priced with no night premium at all"
+    )
+    assert after_eval.expected_net_mxn == pytest.approx(
+        deep_night.trace.considered[0].expected_net_mxn
+    )
+
+
+def test_the_night_premium_fades_out_after_dawn_rather_than_at_midnight() -> None:
+    policy = SmartPolicy()
+    offer = make_offer("LONG_RIDE", pickup_cell="MTY-C", dropoff_cell="MTY-FAR", payout_mxn=200.0)
+
+    before_dawn = policy.decide(
+        *scenario(minute=4 * 60, offers=(offer,), minutes_left_in_shift=300)
+    )
+    mid_morning = policy.decide(
+        *scenario(minute=9 * 60, offers=(offer,), minutes_left_in_shift=300)
+    )
+
+    assert any("night" in f.label.lower() for f in before_dawn.trace.considered[0].factors)
+    assert not any("night" in f.label.lower() for f in mid_morning.trace.considered[0].factors)
+    assert (
+        before_dawn.trace.considered[0].expected_net_mxn
+        < mid_morning.trace.considered[0].expected_net_mxn
+    )

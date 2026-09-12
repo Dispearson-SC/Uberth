@@ -12,7 +12,7 @@ with one question.
 
 from __future__ import annotations
 
-from src.agent.baseline import AcceptAllPolicy, NearestFirstPolicy
+from src.agent.baseline import AcceptAllPolicy, FixedPayoutThresholdPolicy
 from src.agent.smart import SmartPolicy
 
-__all__ = ["AcceptAllPolicy", "NearestFirstPolicy", "SmartPolicy"]
+__all__ = ["AcceptAllPolicy", "FixedPayoutThresholdPolicy", "SmartPolicy"]

@@ -13,6 +13,79 @@ that changes when traffic hits.
 from __future__ import annotations
 
 # --------------------------------------------------------------------------
+# The unaided courier's rule of thumb — the baseline to beat
+# --------------------------------------------------------------------------
+#
+# Ask an experienced courier how they decide and you do not get a heuristic
+# over a menu, because the app never shows them a menu. You get a floor:
+# "I don't take anything under fifty pesos." One number, applied to the one
+# card on screen, and it is genuinely good — it filters the loss-making tail
+# without ever leaving the courier waiting for perfection.
+#
+# That floor is what `baseline.FixedPayoutThresholdPolicy` implements, and it
+# is the honest opponent: it is what the smart policy has to beat to be worth
+# anything at all. So the value below is the one that makes the BASELINE
+# strongest, not the one that flatters the smart policy.
+#
+# MEASURED, 6 seeds x 4 windows, mean MXN/h (the sweep is reproducible with
+# `FixedPayoutThresholdPolicy(floor_mxn=...)`, which exists for exactly this):
+#
+#   floor    0     30     40     45     50     55     60     70     85
+#   ref     91.3   94.0   95.7  101.7  100.4  115.6  116.9   96.0   95.0
+#   night  102.3   99.0   88.7   89.9   93.3   90.6   90.6   84.2   86.4
+#   early   77.8   77.7   88.9   82.6   90.6   87.9   86.9   81.4   54.3
+#   day    110.0  114.4  114.9  113.7  104.0   94.4   93.9   90.8   83.5
+#   POOLED  95.3   96.3   97.0   97.0   97.1   97.1   97.1   88.1   80.9
+#
+# Two things that curve says out loud. First, the pooled optimum is FLAT
+# from 40 to 60 — pooled evidence cannot separate those, because the right
+# floor genuinely depends on the window: 60 is best on the reference shift,
+# 0 (take everything) is best at night, 50 in the early morning, 40 midday.
+# Second, above about 70 the baseline degrades everywhere, because a floor
+# that high leaves it living permanently on the acceptance-rate rescue.
+#
+# 55 is the choice: inside the flat pooled optimum, and within it the
+# strongest on the REFERENCE window — the shift the comparison is headlined
+# on — by a wide and seed-robust margin (115.6 against 100.4 at a floor of
+# 50; every seed better, not one lucky one). Picking the flat optimum's
+# reference-strongest member is picking the hardest opponent available
+# without overfitting to a single window.
+#
+# Why a payout floor and not a nearest-first rule: with one offer per minute,
+# "take the nearest of what is on screen" picks the only card on screen, so a
+# nearest-first baseline is arithmetically identical to accepting everything.
+# It is a menu heuristic, and this app is a flow.
+BASELINE_CALIBRATION: dict[str, float] = {
+    # The floor, in gross MXN off the card. The courier does no arithmetic
+    # on it: no per-hour rate, no kilometres, no clock. That is the point.
+    "fixed_payout_floor_mxn": 55.0,
+    # Late in the shift even a disciplined courier stops arguing: an order
+    # that gets them home paid beats riding home empty. Below this many
+    # minutes of shift left the floor is scaled by the factor underneath.
+    # Without it the baseline would reject its way through the last hour of
+    # every shift, which no real courier does — and a baseline that behaves
+    # worse than the person it represents is a straw man.
+    "late_shift_minutes": 45.0,
+    "late_shift_floor_factor": 0.6,
+    # The app shows a courier their own acceptance rate, and every courier
+    # knows what happens when it sinks: the offers dry up. So the floor is
+    # suspended below this rate, exactly as a real courier starts taking
+    # work again once they notice the screen has gone quiet.
+    #
+    # This is not a concession, it is the difference between an opponent and
+    # a straw man. Measured without it, on the Night window (18:00 start,
+    # when payouts are at their thinnest before the dinner peak), the
+    # baseline rejected its opening offers, the platform's acceptance-rate
+    # retaliation cut its reach, and it never recovered: 11 offers seen in
+    # an eight-hour shift, ZERO deliveries, 0.0 MXN/h on both seeds tested.
+    # A baseline earning nothing proves nothing.
+    "acceptance_rescue_rate": 0.40,
+    # Early ratios are noise; one rejection out of one offer is not a
+    # crisis. Ignore the rate until this many offers have been seen.
+    "min_offers_before_rescue": 5.0,
+}
+
+# --------------------------------------------------------------------------
 # Turning straight-line geometry into street travel
 # --------------------------------------------------------------------------
 
@@ -63,12 +136,14 @@ ECONOMICS_CALIBRATION: dict[str, float] = {
 # Where the delivery leaves you
 # --------------------------------------------------------------------------
 
-# Believed demand per quantised in-app heatmap level (1 calm .. 4 hot). The
-# heatmap is the only demand signal the courier can both SEE and LOCATE: the
-# per-cell demand estimates in `Observation.demand_by_cell` are keyed by a
-# finer grid whose coordinates the courier only learns by standing in them.
-# Lagged, coarse and quantised though it is, reading a level off the app's
-# own map beats assuming every unknown corner of the city is equally busy.
+# Believed demand per quantised in-app heatmap level (1 calm .. 4 hot). Now
+# that `Observation.cell_coords` places every cell in
+# `Observation.demand_by_cell`, the courier's own per-cell sense is the
+# better signal and is tried first — this is the fallback for a point no
+# demand belief covers (the app's heatmap reaches slightly further out than
+# the operating grid). Lagged, coarse and quantised though it is, reading a
+# level off the app's own map beats assuming every unknown corner of the
+# city is equally busy.
 HEATMAP_LEVEL_DEMAND: dict[int, float] = {1: 0.20, 2: 0.45, 3: 0.70, 4: 0.90}
 # How much to believe it, given the lag and the coarseness.
 HEATMAP_LEVEL_CONFIDENCE = 0.40
@@ -261,9 +336,23 @@ BELIEF_CALIBRATION: dict[str, float] = {
 SAFETY_CALIBRATION: dict[str, float] = {
     # Risk premium the courier charges for night kilometres, in MXN per km.
     "night_risk_mxn_per_km": 0.35,
-    # Night ramps in between these two minutes-of-day.
+    # Night ramps IN between these two minutes-of-day: dusk, then full dark.
     "night_starts_minute": 20 * 60,
     "night_full_minute": 23 * 60,
+    # ... and ramps OUT between these two. Without them `night_factor` read
+    # its ramp off minute-of-day alone, so at 00:00 the minute-of-day reset
+    # to 0, fell below `night_starts_minute`, and the premium went to ZERO
+    # for the darkest hours of the shift. Measured on the Night window
+    # (1080-1560, 18:00-02:00) that silently exempted the last 120 of 480
+    # minutes — a quarter of the shift, and the quarter a courier is most
+    # wary of. A risk premium that switches itself off at midnight is not a
+    # calibration choice, it is an off-by-1440.
+    #
+    # 05:00 for "still fully dark" and 07:00 for "fully light" bracket
+    # sunrise in Monterrey across the year (about 06:55 in July, 07:15 in
+    # December). CALIBRATION VALUES, like everything else here.
+    "night_ends_minute": 5 * 60,
+    "day_full_minute": 7 * 60,
     # Rain is both slower and more dangerous.
     "rain_risk_mxn_per_km": 0.25,
     "rain_risk_full_mm": 4.0,
@@ -276,4 +365,33 @@ REPOSITION_CALIBRATION: dict[str, float] = {
     "min_gain_mxn": 1.0,
     # Never ride further than this speculatively.
     "max_reposition_km": 6.0,
+    # Stand still and see, before riding off. A courier who has just parked
+    # has no evidence about this spot yet, and the two guards below are what
+    # stop the branch from eating an entire shift.
+    #
+    # Both were added after a measured death spiral, and the spiral is worth
+    # writing down because neither guard looks necessary until you see it.
+    # When a courier is starved of offers, their measured typical wait blows
+    # up to the clamp (`RESERVATION_CALIBRATION["min_offers_per_hour"]`, so
+    # an hour). `ForwardModel.dead_minutes` scales every wait estimate by
+    # that measurement — correctly — so the gap between a cell believed at
+    # demand 0.00 and one believed at 0.25 stops being three minutes and
+    # becomes twenty, which pays for a six-kilometre ride. And the sensed
+    # demand map is re-drawn with fresh noise every minute, so at 06:00,
+    # when the whole city reads "almost nothing", whichever cell's noise
+    # draw happened to round up this minute becomes the target. The courier
+    # then rides all shift, never stands still long enough to be offered
+    # anything, and the starvation that started it never lifts. Measured:
+    # 393 repositions in a 540-minute shift, 88% of it idle, two offers seen
+    # all morning, 7.6 MXN/h where the same policy with the branch muted
+    # earned 84.7.
+    #
+    # Minutes stood here with an empty screen before moving is even
+    # considered. Direct evidence about THIS spot, and it resets on arrival,
+    # so a move cannot follow a move.
+    "min_idle_minutes_before_moving": 8.0,
+    # And the destination has to be believed BUSIER, by a margin wider than
+    # one band of the app's own quantised heatmap — not merely to have
+    # rounded up this minute.
+    "min_demand_edge": 0.20,
 }

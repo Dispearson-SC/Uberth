@@ -167,6 +167,15 @@ class Observation:
     km_to_home: float
     fuel_minutes_remaining: float
 
+    # Coordinates for every cell named in `traffic_by_cell` and
+    # `demand_by_cell`. Without these a policy is handed cell IDS it cannot
+    # place on a map, so it cannot tell whether a believed-busy zone is on
+    # its way or across the city — which left the traffic and demand beliefs
+    # effectively dead and the repositioning branch unreachable. A courier
+    # looking at their own app plainly knows where the zones are, so this
+    # leaks nothing.
+    cell_coords: dict[str, tuple[float, float]] = field(default_factory=dict)
+
 
 # --------------------------------------------------------------------------
 # The decision, and why — a value, not a log line

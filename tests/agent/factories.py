@@ -131,10 +131,16 @@ def make_observation(
     fuel_minutes_remaining: float = 180.0,
     precip_mm: float = 0.0,
     temp_c: float = 24.0,
+    cell_coords: dict[str, tuple[float, float]] | None = None,
 ) -> Observation:
     at_lat, at_lon = CELLS[at_cell]
     demand = demand if demand is not None else {cell: 0.5 for cell in CELLS}
     traffic = traffic if traffic is not None else {cell: 1.0 for cell in CELLS}
+    # What the real `EnrichmentAdapter` supplies: a coordinate for every
+    # cell named in either belief map. Default to the whole test grid, which
+    # is what the two maps above cover.
+    if cell_coords is None:
+        cell_coords = {cell: CELLS[cell] for cell in set(demand) | set(traffic) if cell in CELLS}
     return Observation(
         minute=minute,
         at_lat=at_lat,
@@ -150,6 +156,7 @@ def make_observation(
         minutes_left_in_shift=minutes_left_in_shift,
         km_to_home=km_to_home if km_to_home is not None else straight_km(at_cell, HOME_CELL),
         fuel_minutes_remaining=fuel_minutes_remaining,
+        cell_coords=dict(cell_coords),
     )
 
 
@@ -205,6 +212,7 @@ def scenario(
     offers_accepted: int = 14,
     heat_levels: dict[str, int] | None = None,
     precip_mm: float = 0.0,
+    cell_coords: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[PlatformView, Observation, CourierSnapshot]:
     """The three arguments `Policy.decide` takes, consistently built."""
     courier = make_courier(
@@ -231,6 +239,7 @@ def scenario(
         minutes_left_in_shift=minutes_left_in_shift,
         fuel_minutes_remaining=fuel_minutes_remaining,
         precip_mm=precip_mm,
+        cell_coords=cell_coords,
     )
     return view, observation, courier
 

@@ -41,6 +41,13 @@ class EnrichmentAdapter:
     `src.world.events.perceivable_events`); omit it to use the same
     cell/point-scoped degradation the ground-truth event generator itself
     falls back to when no drive graph is available.
+
+    It also fills `Observation.cell_coords`: a centroid for every cell named
+    in `traffic_by_cell` or `demand_by_cell`. That is not a leak — a courier
+    reading the zones off their own app plainly knows where those zones are
+    — and withholding it made both belief maps unusable, because a cell id
+    the policy cannot place tells it nothing about whether that zone is on
+    its way or across the city.
     """
 
     def __init__(
@@ -60,6 +67,21 @@ class EnrichmentAdapter:
         self._graph = graph
         self._day_type = day_type_for(scenario.day_of_week)
         self._cell_order: list[str] = sorted(geo.load_cell_index()["cell"].tolist())
+        # Coordinates for every cell the courier will be told about. A
+        # courier looking at their own app plainly knows where the zones on
+        # it are, so handing these over leaks nothing — and withholding them
+        # was worse than useless: it handed the policy cell IDS it could not
+        # place on a map, so it could not tell a believed-busy zone on its
+        # way from one across the city, and both the traffic and the demand
+        # belief were dead weight.
+        #
+        # Seeded from the cell catalog (the fine grid `estimate_demand`
+        # keys on) and extended lazily in `_coords_for`, because the
+        # courier's traffic app also reports on a few cells just outside
+        # the operating grid.
+        self._cell_coords: dict[str, tuple[float, float]] = {
+            cell: geo.cell_centroid(cell) for cell in self._cell_order
+        }
 
         self._rng: np.random.Generator = (
             noise_rng if noise_rng is not None else rng_streams(scenario.seed)["observation_noise"]
@@ -107,6 +129,16 @@ class EnrichmentAdapter:
 
         km_to_home = geo.great_circle_km(courier.lat, courier.lon, courier.home_lat, courier.home_lon)
 
+        # Exactly the cells named in the two belief maps, plus the one the
+        # courier is standing in — coordinates for what their tools just
+        # told them about, not a gazetteer of the city. Without this the
+        # policy is handed cell IDS it cannot place on a map, so it cannot
+        # tell a believed-busy zone on its way from one across town, and
+        # both belief maps are dead weight.
+        cell_coords = self._coords_for(
+            traffic_by_cell, demand_by_cell, extra_cell=courier.cell
+        )
+
         return Observation(
             minute=minute,
             at_lat=courier.lat,
@@ -122,4 +154,31 @@ class EnrichmentAdapter:
             minutes_left_in_shift=courier.minutes_left_in_shift,
             km_to_home=km_to_home,
             fuel_minutes_remaining=courier.fuel_minutes_remaining,
+            cell_coords=cell_coords,
         )
+
+    def _coords_for(self, *cell_maps: dict, extra_cell: str = "") -> dict[str, tuple[float, float]]:
+        """Centroid per cell named in any of `cell_maps`.
+
+        Memoised on `self._cell_coords`: `geo.cell_centroid` is a pure
+        function of the cell id, so a cell resolved once never needs
+        resolving again, and the traffic app only ever adds a handful of
+        cells per minute to the catalog seeded at construction.
+        """
+        out: dict[str, tuple[float, float]] = {}
+        for cell_map in cell_maps:
+            for cell in cell_map:
+                if not cell:
+                    continue
+                coords = self._cell_coords.get(cell)
+                if coords is None:
+                    coords = geo.cell_centroid(cell)
+                    self._cell_coords[cell] = coords
+                out[cell] = coords
+        if extra_cell:
+            coords = self._cell_coords.get(extra_cell)
+            if coords is None:
+                coords = geo.cell_centroid(extra_cell)
+                self._cell_coords[extra_cell] = coords
+            out[extra_cell] = coords
+        return out

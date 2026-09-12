@@ -15,7 +15,7 @@ import pytest
 from src.core.ports import Action, Policy
 from tests.agent.factories import CELLS, make_event, make_offer, scenario, trace_text
 
-from src.agent.baseline import AcceptAllPolicy, NearestFirstPolicy
+from src.agent.baseline import AcceptAllPolicy, FixedPayoutThresholdPolicy
 from src.agent.smart import SmartPolicy
 
 CELL_NAMES = list(CELLS)
@@ -35,7 +35,7 @@ EVENT_UNIVERSE = tuple(
     )
 )
 
-POLICIES: list[type] = [AcceptAllPolicy, NearestFirstPolicy, SmartPolicy]
+POLICIES: list[type] = [AcceptAllPolicy, FixedPayoutThresholdPolicy, SmartPolicy]
 
 
 def random_scenario(rng: random.Random):

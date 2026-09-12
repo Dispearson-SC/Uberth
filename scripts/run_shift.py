@@ -59,7 +59,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import numpy as np  # noqa: E402
 
-from src.agent import AcceptAllPolicy, NearestFirstPolicy, SmartPolicy  # noqa: E402
+from src.agent import AcceptAllPolicy, FixedPayoutThresholdPolicy, SmartPolicy  # noqa: E402
 from src.core.ports import Action, Policy, ShiftResult  # noqa: E402
 from src.engine import NetworkTravelOracle, run_shift, self_check  # noqa: E402
 from src.enrichment import EnrichmentAdapter  # noqa: E402
@@ -79,11 +79,16 @@ from src.world.weather import build_weather_timeline  # noqa: E402
 
 DEFAULT_DATE = Date(2026, 7, 10)  # a Friday — the reference scenario's date
 DEFAULT_SEEDS = (42,)
-DEFAULT_POLICIES = ("accept_all", "nearest_first", "smart")
+DEFAULT_POLICIES = ("accept_all", "fixed_threshold", "smart")
 
 POLICY_FACTORIES = {
     "accept_all": AcceptAllPolicy,
-    "nearest_first": NearestFirstPolicy,
+    # The real bar. `nearest_first` used to sit here and was removed, not
+    # renamed: with one offer per minute it picked the nearest of one card,
+    # so its every row was byte-identical to `accept_all`. See
+    # `src.agent.baseline` for why a payout floor is the right shape of
+    # baseline for a flow.
+    "fixed_threshold": FixedPayoutThresholdPolicy,
     "smart": SmartPolicy,
 }
 

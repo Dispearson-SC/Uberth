@@ -123,9 +123,6 @@ class _ShiftMemory:
     """
 
     last_minute: int = -1
-    # Fine-grid cell id -> where the courier was standing when the app said
-    # they were in it. See `CellIndex.from_heatmap`.
-    cell_coordinates: dict[str, tuple[float, float]] = field(default_factory=dict)
     # (rate, confidence-discounted net MXN, minutes) for every offer this
     # policy has scored this shift, newest last. This IS the courier's
     # belief about the value distribution of the offer flow — the empirical
@@ -133,18 +130,42 @@ class _ShiftMemory:
     scored: list[tuple[float, float, float]] = field(default_factory=list)
     # Jobs accepted and not yet known to be finished, oldest first.
     held: list[_HeldJob] = field(default_factory=list)
-    # Consecutive minutes stood free with nothing on screen. Direct evidence
-    # about THIS spot, and the only evidence about it the courier cannot
-    # argue with: whatever they believed about local demand, an empty screen
-    # for twenty minutes says the flow does not reach here.
+    # Consecutive minutes stood free with nothing on screen IN THE CELL
+    # NAMED BY `idle_streak_cell`. Direct evidence about THAT spot, and the
+    # only evidence about it the courier cannot argue with: whatever they
+    # believed about local demand, an empty screen for twenty minutes says
+    # the flow does not reach there.
+    #
+    # The cell is recorded alongside the count because the count is evidence
+    # about one place and nowhere else. Carrying it across a move is what
+    # turns "this corner is dead, go somewhere else" into a thrash: the
+    # courier arrives in a new cell already holding forty minutes of proof
+    # that somewhere ELSE was dead, immediately concludes this cell is dead
+    # too, and rides on. Measured before this was tracked: 381 repositions
+    # in a 540-minute shift, 75% of it idle, four offers seen all day, 14.7
+    # MXN/h against a baseline's 72.9.
     idle_streak_minutes: float = 0.0
+    idle_streak_cell: str = ""
+    # The cell this policy last set off for, and the cell it was standing in
+    # when it did. A courier knows whether they actually got anywhere, and
+    # the answer is not always yes: "ride to that district" can name a place
+    # the courier then cannot start for, and repeating an instruction that
+    # demonstrably did nothing is how a whole shift disappears. Any target
+    # asked for and observably not reached goes in `unreachable` and is
+    # never asked for again this shift.
+    pending_target: str = ""
+    pending_from_cell: str = ""
+    unreachable: set[str] = field(default_factory=set)
 
     def reset(self) -> None:
         self.last_minute = -1
-        self.cell_coordinates = {}
         self.scored = []
         self.held = []
         self.idle_streak_minutes = 0.0
+        self.idle_streak_cell = ""
+        self.pending_target = ""
+        self.pending_from_cell = ""
+        self.unreachable = set()
 
     def record(self, rate: float, net_mxn: float, minutes: float, window: int) -> None:
         """Remember one scored offer, keeping only the recent `window`.
@@ -226,7 +247,12 @@ class SmartPolicy:
         memory = self._memory
         self._begin_minute(view, observation, courier)
 
-        index = CellIndex.from_heatmap(view.heatmap, observation.at_cell, memory.cell_coordinates)
+        # The courier's spatial vocabulary this minute: the app's own coarse
+        # heatmap cells plus `Observation.cell_coords`, which places every
+        # cell the courier's tools have an opinion about. Both belief maps
+        # become usable at minute one rather than being learned a cell at a
+        # time — see `CellIndex.from_heatmap`.
+        index = CellIndex.from_heatmap(view.heatmap, observation.at_cell, observation.cell_coords)
         model = ForwardModel(observation, index)
 
         # Where the courier will actually BE when this job starts, and how
@@ -301,21 +327,34 @@ class SmartPolicy:
         self, view: PlatformView, observation: Observation, courier: CourierSnapshot
     ) -> None:
         """Housekeeping the courier does for free: notice a new shift has
-        started, note where they are standing, and drop the record of any
-        job they are no longer holding."""
+        started, drop the record of any job they are no longer holding, and
+        keep count of how long they have stood with an empty screen."""
         memory = self._memory
         if view.minute < memory.last_minute or courier.minutes_elapsed <= 1.0:
             memory.reset()
         memory.last_minute = view.minute
 
-        # A courier always knows which cell they are standing in and where
-        # they are standing. Remembering the pair is how the fine grid stops
-        # being a set of opaque ids they cannot locate.
-        if observation.at_cell:
-            memory.cell_coordinates[observation.at_cell] = (observation.at_lat, observation.at_lon)
-
         still_held = set(courier.carrying_order_ids)
         memory.held = [job for job in memory.held if job.order_id in still_held]
+
+        # Did the last move actually happen? The courier set off for
+        # somewhere and is being asked again, from the same cell they set
+        # off from — so they never went. Whatever that instruction named,
+        # they cannot get there, and asking for it again next minute (and
+        # the minute after) is how a shift evaporates. Note it and stop
+        # asking. See `_ShiftMemory.unreachable`.
+        if memory.pending_target:
+            if observation.at_cell == memory.pending_from_cell:
+                memory.unreachable.add(memory.pending_target)
+            memory.pending_target = ""
+            memory.pending_from_cell = ""
+
+        # An empty screen is evidence about the spot the courier is standing
+        # in. Standing somewhere else makes it evidence about somewhere
+        # else, so the count starts again — see `_ShiftMemory`.
+        if observation.at_cell != memory.idle_streak_cell:
+            memory.idle_streak_cell = observation.at_cell
+            memory.idle_streak_minutes = 0.0
 
         if view.offers or courier.carrying_order_ids:
             memory.idle_streak_minutes = 0.0
@@ -355,6 +394,42 @@ class SmartPolicy:
         `offers_seen` and `minutes_elapsed` are both self-knowledge. The
         prior stops a single early offer (or none) from setting a nonsense
         arrival rate; the clamps stop a degenerate one either way.
+
+        LIFETIME, and that is a deliberate choice against a plausible
+        alternative rather than an oversight. This is an average over the
+        whole shift, and a shift is not one flow: on the Night window the
+        offer flow collapses after 23:00 (ground truth drops from 0.85 of
+        peak to 0.05 across midnight), and a courier who has just worked the
+        dinner peak carries that peak in their lifetime average forever.
+        Instrumented, the policy believed 5.9-6.1 offers an hour after
+        midnight while the flow it actually experienced was 0.6-3.2, and
+        "below the bar" was its commonest refusal of that shift (76 against
+        8 blocked by the end-of-shift constraint). Earnings by hour of day,
+        four seeds: it WON the 18:00-22:00 block 1721 MXN to accept-all's
+        1541, and lost 23:00-02:00 by 692 to 1679. So the mis-specification
+        is real and it is where the Night deficit lives.
+
+        A recency-windowed rate (90 minutes, counted off this policy's own
+        log of what it was shown, blended with the same prior) was therefore
+        implemented and measured over 6 seeds x 4 windows. It made the
+        policy WORSE, including on the window it was aimed at:
+
+            window      lifetime   90-minute window
+            early           87.5   83.9
+            day             96.5   91.1
+            reference      112.3   113.7
+            night           79.7   77.0
+
+        The reason it backfires is that this rate is used for two things
+        that pull opposite ways. A lower believed arrival rate lowers the
+        reservation price, which is the intended effect — but it also
+        lengthens `_measured_wait_minutes`, which inflates `dead_minutes`
+        for every destination, which lowers every offer's score. The two
+        cancel, and on three of four windows the noise of a short window
+        costs more than the adaptiveness buys. Fixing the Night window needs
+        the reservation price to know the flow is ending WITHOUT making
+        every destination look worse at the same time, and that is a
+        two-term change this revision did not earn the evidence for.
         """
         return self._blended_rate(courier.offers_seen, courier.minutes_elapsed)
 
@@ -926,6 +1001,17 @@ class SmartPolicy:
         Repositioning costs kilometres and minutes and earns nothing, so the
         expected unpaid wait it saves has to be bigger than the ride.
         """
+        # Stand still and see, first. Riding off before having any evidence
+        # about this spot is how the branch turns into a shift-long loop —
+        # see `REPOSITION_CALIBRATION` for the measured spiral. The streak
+        # resets on arrival in a new cell, so this also guarantees a move
+        # cannot immediately follow a move.
+        if (
+            self._memory.idle_streak_minutes
+            < REPOSITION_CALIBRATION["min_idle_minutes_before_moving"]
+        ):
+            return None
+
         here_demand = model.demand(observation.at_cell, observation.at_lat, observation.at_lon)
         # What standing here is expected to cost. Two sources, and the
         # courier takes the worse: what they BELIEVE about local demand, and
@@ -948,14 +1034,27 @@ class SmartPolicy:
         best_demand = 0.0
 
         # Every cell the courier can both NAME and PLACE: the app's own
-        # heatmap cells plus the fine-grid ones they have learned by standing
-        # in them. Iterating `observation.demand_by_cell` instead — as an
-        # earlier revision did — meant iterating fine-grid ids the courier
-        # has no coordinates for, so `coords_of` returned None for every
-        # single one and this whole function was dead code that could never
-        # move the courier anywhere.
+        # heatmap cells plus every cell `Observation.cell_coords` locates.
+        # Iterating `observation.demand_by_cell` against no coordinate
+        # source — as an earlier revision did — meant `coords_of` returned
+        # None for every fine-grid id and this whole function was dead code
+        # that could never move the courier anywhere.
         for cell in index.known_cells():
             if cell == observation.at_cell:
+                continue
+            if cell in self._memory.unreachable:
+                continue  # asked for it once, demonstrably never got there
+            if cell not in observation.demand_by_cell:
+                # Only somewhere the courier has an actual opinion about.
+                # The app's own display cells are a several-kilometre smear
+                # whose centroid is not a place: "ride to that district"
+                # resolves to wherever is nearest that fiction, which can be
+                # the corner the courier is already standing on — and then
+                # nothing happens, the screen stays empty, and the same
+                # instruction comes out again next minute. Before
+                # `Observation.cell_coords` existed these smears were the
+                # only spatial vocabulary the policy had. They are not any
+                # more.
                 continue
             coords = index.coords_of(cell)
             if coords is None:
@@ -968,6 +1067,13 @@ class SmartPolicy:
             if leg.minutes * 2.0 > float(observation.minutes_left_in_shift):
                 continue
             there = model.demand(cell, coords[0], coords[1])
+            # Believed BUSIER, by more than one band of the app's own
+            # quantised heatmap. Without this the target is whichever cell's
+            # demand noise happened to round up this minute, which at 06:00
+            # — when the whole city reads "almost nothing" — is a different
+            # cell every minute.
+            if there.value - here_demand.value < REPOSITION_CALIBRATION["min_demand_edge"]:
+                continue
             gain = wait_here - (
                 leg.minutes + model.dead_minutes(there.value, self._measured_wait_minutes(courier))
             )
@@ -991,6 +1097,11 @@ class SmartPolicy:
         )
         if gain_mxn < REPOSITION_CALIBRATION["min_gain_mxn"]:
             return None
+
+        # Remember what was asked for, so next minute the courier can tell
+        # whether they actually got going — see `_begin_minute`.
+        self._memory.pending_target = best_cell
+        self._memory.pending_from_cell = observation.at_cell
 
         summary = (
             "%s, so I am riding %.1f km to %s: I believe demand there is %.2f against %.2f here, "
