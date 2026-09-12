@@ -154,7 +154,14 @@ def submit() -> str:
 def poll(job_id: str, max_wait_s: int = 3600, interval_s: int = 30) -> dict | None:
     deadline = time.time() + max_wait_s
     while time.time() < deadline:
-        response = requests.get(f"{STATUS_URL}/{job_id}", params={"key": api_key()}, timeout=60)
+        try:
+            response = requests.get(f"{STATUS_URL}/{job_id}", params={"key": api_key()}, timeout=60)
+        except requests.RequestException as exc:
+            # Transient DNS/connection failures must not end a poll that may
+            # have to run for the better part of an hour.
+            print(f"[poll] connection error, retrying: {type(exc).__name__}")
+            time.sleep(interval_s)
+            continue
         if response.status_code != 200:
             print(f"[poll] http {response.status_code}: {response.text[:300]}")
             time.sleep(interval_s)
