@@ -204,3 +204,14 @@ PLAUSIBILITY_CALIBRATION: dict[str, float] = {
     "idle_fraction_min": 0.15,
     "idle_fraction_max": 0.40,
 }
+
+# --------------------------------------------------------------------------
+# `stubs.StubRawSource`: a straight line at a fixed speed, and nothing else.
+# CALIBRATION VALUES, and deliberately crude — the stub exists so the engine
+# is runnable standalone, never so a demo runs on it.
+# --------------------------------------------------------------------------
+
+STUB_RAW_SOURCE_CALIBRATION: dict[str, float] = {
+    "detour_factor": 1.35,
+    "speed_kmh": 22.0,
+}

@@ -24,14 +24,14 @@ def test_baseline_has_a_name(baseline) -> None:
 
 
 def test_accept_all_takes_even_a_terrible_offer() -> None:
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_1700,
         offers=(
             make_offer("BAD", pickup_cell="MTY-FAR", dropoff_cell="MTY-S", payout_mxn=18.0),
         ),
     )
 
-    decision = AcceptAllPolicy().decide(view, observation, courier)
+    decision = AcceptAllPolicy().decide(view, sources, courier)
 
     assert decision.action is Action.ACCEPT
     assert decision.order_id == "BAD"
@@ -39,7 +39,7 @@ def test_accept_all_takes_even_a_terrible_offer() -> None:
 
 def test_fixed_threshold_rejects_the_one_card_below_its_floor() -> None:
     """The flow case, and the one that matters: one offer, under the floor."""
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_1700,
         offers=(
             make_offer("CHEAP", pickup_cell="MTY-C", dropoff_cell="MTY-N",
@@ -47,7 +47,7 @@ def test_fixed_threshold_rejects_the_one_card_below_its_floor() -> None:
         ),
     )
 
-    decision = FixedPayoutThresholdPolicy().decide(view, observation, courier)
+    decision = FixedPayoutThresholdPolicy().decide(view, sources, courier)
 
     assert decision.action is Action.REJECT
     assert decision.order_id is None
@@ -55,7 +55,7 @@ def test_fixed_threshold_rejects_the_one_card_below_its_floor() -> None:
 
 
 def test_fixed_threshold_takes_the_one_card_that_clears_its_floor() -> None:
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_1700,
         offers=(
             make_offer("OK", pickup_cell="MTY-FAR", dropoff_cell="MTY-S",
@@ -63,7 +63,7 @@ def test_fixed_threshold_takes_the_one_card_that_clears_its_floor() -> None:
         ),
     )
 
-    decision = FixedPayoutThresholdPolicy().decide(view, observation, courier)
+    decision = FixedPayoutThresholdPolicy().decide(view, sources, courier)
 
     # Clears the floor even though the pickup is 12 km away and the drop-off
     # is on the far side of the city: the floor is the only thing it reads.
@@ -75,7 +75,7 @@ def test_fixed_threshold_is_not_nearest_first_it_takes_the_best_payer() -> None:
     """The distinction that killed `NearestFirstPolicy`: this rule is about
     the money on the card, not the geometry, so a far rich offer beats a near
     poor one."""
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_1700,
         at_cell="MTY-C",
         offers=(
@@ -86,7 +86,7 @@ def test_fixed_threshold_is_not_nearest_first_it_takes_the_best_payer() -> None:
         ),
     )
 
-    decision = FixedPayoutThresholdPolicy().decide(view, observation, courier)
+    decision = FixedPayoutThresholdPolicy().decide(view, sources, courier)
 
     assert decision.action is Action.ACCEPT
     assert decision.order_id == "FAR_RICH"
@@ -100,19 +100,19 @@ def test_fixed_threshold_relaxes_its_floor_near_the_bell() -> None:
         make_offer("LATE", pickup_cell="MTY-C", dropoff_cell="MTY-SC", payout_mxn=payout),
     )
 
-    mid_shift, observation, courier = scenario(
+    mid_shift, sources, courier = scenario(
         minute=MINUTE_1700, offers=offers, minutes_left_in_shift=240
     )
-    assert FixedPayoutThresholdPolicy().decide(mid_shift, observation, courier).action is (
+    assert FixedPayoutThresholdPolicy().decide(mid_shift, sources, courier).action is (
         Action.REJECT
     )
 
-    late_view, late_observation, late_courier = scenario(
+    late_view, late_sources, late_courier = scenario(
         minute=MINUTE_1700,
         offers=offers,
         minutes_left_in_shift=int(BASELINE_CALIBRATION["late_shift_minutes"]) - 5,
     )
-    late = FixedPayoutThresholdPolicy().decide(late_view, late_observation, late_courier)
+    late = FixedPayoutThresholdPolicy().decide(late_view, late_sources, late_courier)
     assert late.action is Action.ACCEPT
     assert late.order_id == "LATE"
 
@@ -128,18 +128,18 @@ def test_fixed_threshold_suspends_its_floor_once_the_app_starves_it() -> None:
         make_offer("CHEAP", pickup_cell="MTY-C", dropoff_cell="MTY-N", payout_mxn=FLOOR - 25.0),
     )
 
-    healthy_view, observation, healthy = scenario(
+    healthy_view, sources, healthy = scenario(
         minute=MINUTE_1700, offers=offers, offers_seen=20, offers_accepted=14
     )
     assert FixedPayoutThresholdPolicy().decide(
-        healthy_view, observation, healthy
+        healthy_view, sources, healthy
     ).action is Action.REJECT
 
-    starved_view, starved_observation, starved = scenario(
+    starved_view, starved_sources, starved = scenario(
         minute=MINUTE_1700, offers=offers, offers_seen=20, offers_accepted=2
     )
     rescued = FixedPayoutThresholdPolicy().decide(
-        starved_view, starved_observation, starved
+        starved_view, starved_sources, starved
     )
     assert rescued.action is Action.ACCEPT
     assert rescued.order_id == "CHEAP"
@@ -150,31 +150,31 @@ def test_fixed_threshold_ignores_an_early_acceptance_rate_as_noise() -> None:
     offers = (
         make_offer("CHEAP", pickup_cell="MTY-C", dropoff_cell="MTY-N", payout_mxn=FLOOR - 25.0),
     )
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_1700, offers=offers, offers_seen=2, offers_accepted=0
     )
 
     assert FixedPayoutThresholdPolicy().decide(
-        view, observation, courier
+        view, sources, courier
     ).action is Action.REJECT
 
 
 def test_fixed_threshold_floor_is_overridable_for_the_calibration_sweep() -> None:
     offers = (make_offer("A", pickup_cell="MTY-C", dropoff_cell="MTY-N", payout_mxn=60.0),)
-    view, observation, courier = scenario(minute=MINUTE_1700, offers=offers)
+    view, sources, courier = scenario(minute=MINUTE_1700, offers=offers)
 
     assert FixedPayoutThresholdPolicy(floor_mxn=40.0).decide(
-        view, observation, courier
+        view, sources, courier
     ).action is Action.ACCEPT
     assert FixedPayoutThresholdPolicy(floor_mxn=90.0).decide(
-        view, observation, courier
+        view, sources, courier
     ).action is Action.REJECT
 
 
 def test_baselines_hold_when_there_is_nothing_on_screen(baseline) -> None:
-    view, observation, courier = scenario(minute=MINUTE_1700, offers=())
+    view, sources, courier = scenario(minute=MINUTE_1700, offers=())
 
-    decision = baseline.decide(view, observation, courier)
+    decision = baseline.decide(view, sources, courier)
 
     assert decision.action is Action.HOLD
     assert decision.order_id is None
@@ -182,7 +182,7 @@ def test_baselines_hold_when_there_is_nothing_on_screen(baseline) -> None:
 
 
 def test_baselines_return_a_full_trace(baseline) -> None:
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_1700,
         offers=(
             make_offer("A", pickup_cell="MTY-N", dropoff_cell="MTY-SC", payout_mxn=70.0),
@@ -190,7 +190,7 @@ def test_baselines_return_a_full_trace(baseline) -> None:
         ),
     )
 
-    decision = baseline.decide(view, observation, courier)
+    decision = baseline.decide(view, sources, courier)
 
     assert isinstance(decision, Decision)
     assert isinstance(decision.trace, DecisionTrace)

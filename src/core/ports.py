@@ -326,18 +326,132 @@ class PlatformPort(Protocol):
 
 @runtime_checkable
 class EnrichmentPort(Protocol):
-    """The courier's own external tools, with realistic error and lag."""
+    """The courier's own external tools, with realistic error and lag.
+
+    DEPRECATED in favour of `RawSourcePort`. This pushes a finished
+    `Observation` at the policy, which means the ENGINE decides what the
+    agent needs to know — the simulator author's judgement baked into the
+    agent's perception. It also cannot be exported: in another city there is
+    no engine to push anything. Kept only so existing adapters keep working
+    during the migration. See Docs/architecture/AGENT_MODEL.md section 2.
+    """
 
     def observe(self, minute: int, courier: CourierSnapshot) -> Observation: ...
 
 
 @runtime_checkable
+class RawSourcePort(Protocol):
+    """Sources a courier could obtain anywhere, queried BY the agent.
+
+    This is the portable replacement for `EnrichmentPort`. The agent pulls
+    what it decides it needs instead of being handed a finished belief, which
+    is both what a real courier does and the only version that survives being
+    dropped in a city we never calibrated anything for.
+
+    THE PORTABILITY RULE, and it should be enforced by a test rather than
+    trusted: every method here must be answerable from a pair of coordinates
+    and a phone screen. Nothing else. A weather service answers any lat/lon;
+    OpenStreetMap covers the planet; the app feed is the same six fields in
+    every market. DENUE and INEGI are Mexico-only and therefore belong to the
+    SIMULATOR, which stands in for reality — never to the agent, which has to
+    work in Guadalajara too.
+
+    Every return is an `Estimate`, never a bare float: these are readings a
+    courier took, not facts handed down. A source that returns exact truth is
+    leaking, and the leak will not be visible in any single number — only in
+    an agent that is mysteriously good.
+    """
+
+    # --- Weather, by coordinate. Works in any city. ---
+    def weather_at(self, lat: float, lon: float, minute: int) -> dict[str, Estimate]:
+        """Temperature, apparent temperature and precipitation."""
+        ...
+
+    # --- Road network, from a bounding box. OSM covers the planet. ---
+    def travel_estimate(self, from_lat: float, from_lon: float, to_lat: float, to_lon: float, minute: int) -> tuple[Estimate, Estimate]:
+        """Return (km, minutes) as separate estimates. Never one number:
+        they decouple exactly when traffic or a detour hits, and that is what
+        changes which offer is worth taking."""
+        ...
+
+    def congestion_near(self, lat: float, lon: float, radius_km: float, minute: int) -> dict[str, Estimate]:
+        """Travel-time multipliers for cells within reach. Sparse on purpose —
+        a courier does not know traffic across a whole city."""
+        ...
+
+    # --- Commercial density, from OSM POIs. Also planetary. ---
+    def poi_density_near(self, lat: float, lon: float, radius_km: float) -> dict[str, Estimate]:
+        """How much food commerce sits in each nearby cell. This is what makes
+        "will this drop-off strand me?" answerable in a city we know nothing
+        else about."""
+        ...
+
+    # --- Disruptions the courier could plausibly have heard about. ---
+    def perceived_disruptions(self, lat: float, lon: float, minute: int) -> tuple[PerceivedEvent, ...]:
+        """Only what detectability allows. A crash starting at minute 143 and
+        detectable from 149 must not appear at 145, and this method is the one
+        place that rule is applied."""
+        ...
+
+    # --- Coordinates for cell ids this port hands back. ---
+    def cell_coords(self, cells: tuple[str, ...]) -> dict[str, tuple[float, float]]:
+        """Without these a policy holds ids it cannot place on a map, so it
+        cannot tell a believed-busy zone on its way from one across the city.
+        A courier looking at their own app plainly knows where the zones are."""
+        ...
+
+    # --- The agent's own accumulated history. EMPTY in a new city. ---
+    def recall_kitchen(self, denue_id: str) -> Estimate | None:
+        """What this branch's prep time has been. `None` means never visited —
+        the agent has to earn this, and on shift one it knows nothing."""
+        ...
+
+    def record_kitchen(self, denue_id: str, observed_minutes: float, minute: int) -> None:
+        """Called on pickup. The only way a kitchen memory comes to exist."""
+        ...
+
+    def recall_eta_bias(self, cell: str) -> Estimate | None:
+        """How much the app's ETA has lied in this zone: promised against
+        realised. Purely self-learned, needs no external source, and it is the
+        cleanest arbitrage available to the agent."""
+        ...
+
+    def record_trip(self, from_cell: str, to_cell: str, minute: int, promised_minutes: float, actual_minutes: float, actual_km: float) -> None:
+        """Called on completion. Feeds the offline re-fit."""
+        ...
+
+    def refit(self) -> dict[str, int]:
+        """Re-fit the relationship tables from accumulated history. Called
+        BETWEEN shifts, never inside a decision: fitting is expensive and
+        using is free, which is the split that makes a seven-second budget
+        workable at all. Returns sample counts per table so a caller can see
+        what the agent actually had evidence for."""
+        ...
+
+
+@runtime_checkable
 class Policy(Protocol):
-    """The decision. Implementations import ONLY this module."""
+    """The decision. Implementations import ONLY this module.
+
+    `sources` is the second argument and NOT an `Observation`, and the
+    distinction is the whole architecture: the engine does not decide what
+    the courier needs to know. It hands over a port, and the policy asks
+    its own questions. An engine that assembles a finished observation has
+    baked the simulator author's judgement into the agent's perception,
+    and — the fatal objection — it cannot be dropped in another city,
+    because there is no engine there to push it anything. See
+    Docs/architecture/AGENT_MODEL.md.
+
+    This annotation said `observation: Observation` for a while after the
+    inversion landed. `runtime_checkable` `isinstance` only checks method
+    NAMES, and the arity happened to match, so nothing failed and the lie
+    was invisible to the type checker and the test suite alike. Worth
+    remembering: a Protocol cannot tell you its own annotation is wrong.
+    """
 
     name: str
 
-    def decide(self, view: PlatformView, observation: Observation, courier: CourierSnapshot) -> Decision: ...
+    def decide(self, view: PlatformView, sources: "RawSourcePort", courier: CourierSnapshot) -> Decision: ...
 
 
 @dataclass(frozen=True)

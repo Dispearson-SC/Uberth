@@ -65,7 +65,7 @@ def test_the_same_offer_is_accepted_at_1700_and_rejected_at_2130() -> None:
 def test_late_in_the_shift_a_homeward_offer_beats_an_identical_outbound_one() -> None:
     # Both legs are 4.4 km from the same pickup for the same money. The only
     # difference is which way they point relative to home.
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_2130,
         at_cell="MTY-N",
         minutes_left_in_shift=90,
@@ -75,7 +75,7 @@ def test_late_in_the_shift_a_homeward_offer_beats_an_identical_outbound_one() ->
         ),
     )
 
-    decision = SmartPolicy().decide(view, observation, courier)
+    decision = SmartPolicy().decide(view, sources, courier)
 
     assert decision.action is Action.ACCEPT
     assert decision.order_id == "HOMEWARD"
@@ -88,7 +88,7 @@ def test_late_in_the_shift_a_homeward_offer_beats_an_identical_outbound_one() ->
 def test_early_in_the_shift_the_outbound_penalty_is_not_applied() -> None:
     # Same pair of offers at 17:00: the ride home is hours away, so it must not
     # move the score. Direction only starts to matter as the shift closes.
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_1700,
         at_cell="MTY-N",
         minutes_left_in_shift=300,
@@ -98,7 +98,7 @@ def test_early_in_the_shift_the_outbound_penalty_is_not_applied() -> None:
         ),
     )
 
-    decision = SmartPolicy().decide(view, observation, courier)
+    decision = SmartPolicy().decide(view, sources, courier)
 
     outbound = next(e for e in decision.trace.considered if e.order_id == "OUTBOUND")
     homeward = next(e for e in decision.trace.considered if e.order_id == "HOMEWARD")

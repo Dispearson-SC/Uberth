@@ -264,29 +264,146 @@ should underperform. Any design where it does not is leaking local knowledge.
 For provenance of every figure below, see the git history — each number is
 recorded in the commit that produced it.
 
+**Read §10.1 before quoting any earnings figure.** An earlier version of
+this section reported "+23.1% over accept-everything, wins 6/6" as the
+headline. That number was real but it was measured on six seeds, and six
+seeds cannot carry it.
+
 | | Value |
 |---|---|
-| Decision latency, SmartPolicy | 0.33 ms median, 0.46 ms p99 |
+| Decision latency, SmartPolicy | 1.0 ms median, 18.3 ms p99 |
 | Shift generation | 3.3 s for 8 simulated hours |
-| Tests | 88 passing |
+| Tests | 120 passing |
 | Agent import boundary | enforced by AST scan and a clean-subprocess check |
-| Smart versus accept-everything, reference window | +23.1% mean, wins 6/6 seeds |
-| Smart versus a 55-peso payout floor, reference window | −2.8% mean, wins 3/6 seeds |
-| Kilometres driven, smart versus that floor | ~102 km versus ~176 km |
+| Agent portability | enforced by 16 tests; verified to fail on a deliberate violation |
 
-The honest headline is **not** "earns more". It is **"earns nearly the same on
-42% less driving"** — 74 fewer kilometres per shift of fuel, wear, risk and
-Monterrey heat that the courier does not pay for.
+Latency was 0.33 ms median / 0.46 ms p99 before the pull inversion. The rise
+is the repositioning branch scanning every placeable cell, which grew from
+~8 heatmap cells to all 127 when the agent gained `cell_coords`. Memoising
+the cell lookup cut p99 from 33.9 ms to 18.3 ms with a byte-identical shift
+digest. Against DiDi's ~7,000 ms that is 380× headroom, so this is recorded
+as a fact, not a problem.
 
-Known open items, none hidden:
+---
 
-- `self_check` fails on deliveries per hour and MXN per hour. Thresholds
-  untouched. The dominant cycle component is the ride TO the restaurant.
-- The night window loses 22% to accept-everything. Diagnosed: the reservation
-  price uses a lifetime-average arrival rate, so it stays at dinner-peak
-  height through three dead hours after midnight. The obvious fix — a
-  recency-windowed rate — measured worse, because the same rate also inflates
-  every destination's dead-minute estimate. It needs the two uses decoupled.
-- The 12:00-20:00 surge realism window sits at 25.8%, above the 18% band. A
-  flat-profile control run shows 17.8%, so this predates the supply profile
-  and lives in the surge constants.
+### 10.1 Earnings, and why the seed count decides the story
+
+Reference window 14:00–22:00. **The 6-seed set (42, 7, 13, 5, 21, 99) is
+favourable to the agent against accept-everything, and the 18-seed set is
+the honest sample.**
+
+| | 6 seeds | 18 seeds |
+|---|---|---|
+| MXN/h, accept-everything | 91.3 | 94.7 |
+| MXN/h, 55-peso payout floor | 115.6 | 104.1 |
+| MXN/h, smart | 103.6 | 100.5 |
+| smart vs accept-everything | +13.6%, wins 6/6 | **+6.2%, wins 12/18** |
+| smart vs the payout floor | −10.4%, wins 1/6 | **−3.5%, wins 7/18** |
+| km driven, smart vs the floor | 91.1 vs 175.5 | **85.4 vs 153.9** |
+
+The per-seed margin against the floor spans **−40.2% to +58.3%**. With that
+much variance, six draws cannot resolve a mean difference of a few per
+cent. Quoting a 6-seed margin as the result is not a rounding choice, it is
+a claim the data does not support.
+
+### 10.2 The figure that does not move: pesos per kilometre DRIVEN
+
+Same runs, same window. Total payout over total distance actually driven —
+which charges the courier for the distance the platform does not pay for.
+
+| | 6 seeds | 18 seeds |
+|---|---|---|
+| accept-everything | 4.11 | 4.52 |
+| 55-peso payout floor | 5.27 | 5.41 |
+| **smart** | **9.10** | **9.42** |
+| smart vs the floor | **+73%** | **+74%, wins 18/18** |
+
+**This is the result to state.** Not because it is the largest number
+available, but because it is the only one that is stable: +73% on six seeds
+and +74% on eighteen, winning every seed in the sample, with a worst case
+of +11.3%. The MXN/hour margin moved by 17 points between the same two
+samples.
+
+The reason the two metrics disagree is the product's whole thesis. The app
+pays by the trip and is silent about the kilometre. Measured on seed 42,
+the 13 delivery records sum to 41.3 paid km while the courier drove 82.2 —
+**half the driving is unpaid**, and for the payout floor it is 58%. An
+agent optimising what the courier actually keeps optimises the kilometre.
+An agent optimising gross takings does not.
+
+The honest sentence is therefore **"nearly the same money on 44% less
+driving, which is 74% more per kilometre driven"** — and on any single seed
+it may well be *less* money. On seed 42, the demo seed, the floor earns
+1,158 MXN against smart's 789.
+
+### 10.3 Cold start, with a control arm
+
+12 seeds, 3 consecutive shifts, a different day each shift, history
+persisting and `refit()` between them — against a control that runs the
+identical days in the identical order and throws the history away.
+
+| | shift 1 | shift 2 | shift 3 |
+|---|---|---|---|
+| history persisting | 99.2 | 105.8 | 102.6 |
+| control, cold every day | 99.2 | 97.7 | 98.2 |
+| **delta** | **+0.0** | **+8.1** | **+4.5** |
+
+The control arm is not decoration. Without it the per-seed lines read
+90 → 88 → 155 and 104 → 80 → 48, because shift index was confounded with
+how hard that particular day was. Uncontrolled, shift 1 → shift 3 looks
+like +3.4%; that number means nothing on its own.
+
+By shift 3 the agent holds ~40 trips, 22 travel-correction buckets, 17
+ETA-bias zones and 38 remembered kitchens. 7 of 12 seeds finish ahead of
+their cold twin.
+
+**The curve is real but shallow, and §6 says to treat that as a leak hunt
+rather than a win. The hunt found one.** The agent's own trips measure a
+travel correction of 1.12–1.15 — the prior it arrived with was only 12–15%
+optimistic, so there was little to learn. That is by construction:
+`free_flow_to_scooter_factor` was calibrated **from measured Monterrey
+legs**, deliberately, so the cold-start travel belief reproduced the
+previous model and the before/after comparison measured one change instead
+of two. That traded curve steepness for comparability, and it is a local
+prior the agent should not have in an unknown city.
+
+The remaining local priors, listed so nobody has to find them: that scooter
+factor; `prior_offers_per_hour = 7.5`; `base_reservation_mxn_per_hour = 20`
+and the MXN/km fuel and wear costs; `dead_minutes_at_zero/full_demand`
+14/2; the sunrise control points, which are genuinely latitude-dependent.
+None is a dataset and all are priors §6 permits — but together they are why
+shift one is not visibly bad, which §6 warns is the signature of a leak.
+
+The app-ETA bias is the clean signal by contrast: the agent learns the app
+under-promises by 14–29% per zone from nothing but its own completed trips,
+with no external source at all.
+
+---
+
+## 11. Known open items, none hidden
+
+- **`self_check` fails on deliveries per hour and MXN per hour, on all
+  three policies and all 18 seeds.** Thresholds untouched. The dominant
+  cycle component is the ride TO the restaurant.
+- **Four of the six relationship functions in §8 are not fittable through
+  the current port.** `RawSourcePort` has no `record_offer_seen(cell,
+  minute)` and no `record_idle(cell, minutes)`, so `arrival_rate(cell,
+  hour)` and `dead_minutes(dest_cell, hour)` cannot be learned per cell;
+  `recall_kitchen` takes no minute, so `kitchen_minutes(venue, hour)`
+  cannot be keyed by hour; and `record_trip` carries no `promised_km`, so
+  the app's distance bias is unlearnable even though its time bias is not.
+- **The night-window deficit is a direct consequence of the first of
+  those.** The reservation price uses a city-wide lifetime-average arrival
+  rate, so it stays at dinner-peak height through three dead hours after
+  midnight. The obvious fix — a recency window — measured worse, because
+  the same rate also inflates every destination's dead-minute estimate. It
+  needs the two uses decoupled, and decoupling them needs a per-cell offer
+  history the port cannot currently record.
+- **The 12:00–20:00 surge realism window sits at 25.8%, above the 18%
+  band.** A flat-profile control run shows 17.8%, so this predates the
+  supply profile and lives in the surge constants.
+- **The agent supplies its own hour-of-day rhythm prior.** `poi_density_near`
+  takes no minute — correct, since POI density is geography — which leaves
+  `PlatformView.heatmap` as the only time-varying demand signal reaching
+  the agent. So a coarse 12-point bimodal meal prior lives inside the
+  agent. It is the one place a prior was added rather than queried for.

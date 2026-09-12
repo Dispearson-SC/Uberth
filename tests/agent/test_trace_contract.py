@@ -1,9 +1,15 @@
 """The trace is what a judge inspects, so it is held to a contract.
 
 The hard one is honesty: the trace may contain only what the agent could know
-at that minute. If it names an event that is not in `perceived_events`, the
+at that minute. If it names a disruption the raw sources did not report, the
 agent saw the future, and the whole demo is a lie. That is asserted as a
 property over many generated decisions, not as a single lucky case.
+
+Sharper than it used to be, now that perception is a pull. The fake port
+knows which disruptions it was willing to disclose, so "the agent could not
+know this" is a fact about the SOURCE rather than about a field somebody
+filled in — and the same fake also records every question the agent asked,
+so there is nowhere else the information could have come from.
 """
 
 from __future__ import annotations
@@ -40,6 +46,8 @@ POLICIES: list[type] = [AcceptAllPolicy, FixedPayoutThresholdPolicy, SmartPolicy
 
 def random_scenario(rng: random.Random):
     perceived = tuple(e for e in EVENT_UNIVERSE if rng.random() < 0.4)
+    # `perceived` is everything the sources will DISCLOSE this minute. Every
+    # other event in the universe exists and is deliberately withheld.
     offers = tuple(
         make_offer(
             "ORD-%d" % i,
@@ -72,13 +80,15 @@ def test_the_trace_never_names_an_unperceived_event(policy_class: type) -> None:
     policy: Policy = policy_class()
 
     for _ in range(250):
-        view, observation, courier = random_scenario(rng)
+        view, sources, courier = random_scenario(rng)
         if courier.offers_accepted > courier.offers_seen:
             courier.offers_accepted = courier.offers_seen
 
-        text = trace_text(policy.decide(view, observation, courier).trace)
+        text = trace_text(policy.decide(view, sources, courier).trace)
 
-        perceived_ids = {e.event_id for e in observation.perceived_events}
+        perceived_ids = {
+            event.event_id for event in sources.perceived_disruptions(courier.lat, courier.lon, view.minute)
+        }
         for event in EVENT_UNIVERSE:
             if event.event_id in perceived_ids:
                 continue
@@ -93,11 +103,11 @@ def test_every_decision_carries_a_usable_trace(policy_class: type) -> None:
     policy: Policy = policy_class()
 
     for _ in range(250):
-        view, observation, courier = random_scenario(rng)
+        view, sources, courier = random_scenario(rng)
         if courier.offers_accepted > courier.offers_seen:
             courier.offers_accepted = courier.offers_seen
 
-        decision = policy.decide(view, observation, courier)
+        decision = policy.decide(view, sources, courier)
         trace = decision.trace
 
         assert trace.minute == view.minute
@@ -124,7 +134,12 @@ def test_every_decision_carries_a_usable_trace(policy_class: type) -> None:
             assert decision.order_id is None
             assert trace.chosen_order_id is None
         if decision.action is Action.REPOSITION:
-            assert decision.target_cell in observation.demand_by_cell
+            # It may only ride somewhere it has an opinion about, and the
+            # only opinions it has are the ones it composed from what the
+            # sources disclosed.
+            assert decision.target_cell in sources.poi_density_near(
+                courier.lat, courier.lon, 30.0
+            )
 
 
 @pytest.mark.parametrize("policy_class", POLICIES)
@@ -133,21 +148,23 @@ def test_a_chosen_offer_is_always_one_that_was_on_screen(policy_class: type) -> 
     policy: Policy = policy_class()
 
     for _ in range(100):
-        view, observation, courier = random_scenario(rng)
-        decision = policy.decide(view, observation, courier)
+        view, sources, courier = random_scenario(rng)
+        decision = policy.decide(view, sources, courier)
         if decision.order_id is not None:
             assert decision.order_id in {o.order_id for o in view.offers}
 
 
 def test_the_trace_reports_a_perceived_event_it_actually_used() -> None:
     event = make_event("EV-99-crash", kind="crash", cells=("MTY-E",), delay_minutes=15.0)
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=19 * 60,
         at_cell="MTY-C",
         offers=(make_offer("A", pickup_cell="MTY-E", dropoff_cell="MTY-SC", payout_mxn=90.0),),
         events=(event,),
     )
 
-    decision = SmartPolicy().decide(view, observation, courier)
+    decision = SmartPolicy().decide(view, sources, courier)
 
     assert "EV-99-crash" in trace_text(decision.trace)
+    # And it went and asked, rather than being handed it.
+    assert sources.asked("perceived_disruptions")

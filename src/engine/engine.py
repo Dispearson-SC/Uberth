@@ -20,8 +20,8 @@ THREE CONSTRAINTS BUILT IN FROM THE START (see module-level calibration in
   1. HOME. The courier starts the shift at `home_cell` and the engine keeps
      running — past the nominal `shift_end_min` if it has to — until the
      courier is back home with no order in hand. That extra time is real
-     and dilutes `mxn_per_hour`; a policy that ignores `Observation.km_to_home`
-     late in the shift pays for it in the numbers, not in a rule.
+     and dilutes `mxn_per_hour`; a policy that ignores how far a drop-off
+     leaves it from home late in the shift pays for it in the numbers.
   2. ACCEPTANCE RATE. `CourierSnapshot.offers_seen`/`offers_accepted` are
      tracked every tick; `calibration.acceptance_rate_offer_multiplier` is
      the explicit hook a `PlatformPort` reads to throttle a low-acceptance
@@ -54,11 +54,28 @@ DESIGN SIMPLIFICATIONS, stated plainly rather than left implicit:
     no "reopen" primitive).
   - Every other exogenous event type (`CRASH`, `CHECKPOINT`, `SURGE_WINDOW`,
     `MASS_EVENT`, `KITCHEN_BACKLOG`) is ground truth the courier may come to
-    perceive once a real `EnrichmentPort` is wired in, but this engine slice
-    does not itself apply their physical effects to travel/kitchen time —
-    only `TrafficTick` congestion and `STREET_CLOSURE` do. Scoped this way
-    deliberately: modelling every event type's ground-truth physical effect
-    is a large surface the brief does not ask this slice to own.
+    perceive through the raw sources, but this engine slice does not itself
+    apply their physical effects to travel/kitchen time — only `TrafficTick`
+    congestion and `STREET_CLOSURE` do. Scoped this way deliberately:
+    modelling every event type's ground-truth physical effect is a large
+    surface the brief does not ask this slice to own.
+
+WHAT THIS ENGINE NO LONGER DOES, and it is the most important line in this
+docstring. It does not build the agent's beliefs. It used to call
+`EnrichmentPort.observe()` and hand the finished `Observation` to
+`Policy.decide`, which meant THE ENGINE chose what the agent needed to know
+— the simulator author's judgement baked into the agent's perception, and an
+agent that cannot start in a city where no engine exists to push it
+anything. Now it passes the `RawSourcePort` straight through and the policy
+asks it whatever it decides it needs.
+
+The engine keeps exactly two jobs on that port, and both are things only it
+can know: `record_kitchen` on pickup, with what the courier actually waited,
+and `record_trip` on completion, with what the app promised against what the
+trip took. That is how the agent's history comes to exist at all. It also
+reads `perceived_disruptions` once per tick for `TickRecord`, so a replay can
+show what was knowable at each minute without the recorder ever touching
+ground truth.
 """
 
 from __future__ import annotations
@@ -75,10 +92,11 @@ from src.core.ports import (
     Decision,
     DecisionTrace,
     DeliveryRecord,
-    EnrichmentPort,
+    OfferCard,
     PlatformPort,
     PlatformView,
     Policy,
+    RawSourcePort,
     RecorderPort,
     ShiftResult,
     TickRecord,
@@ -136,6 +154,12 @@ class _AcceptedJob:
 
     order: OrderOffer
     accepted_at_min: int
+    # What the app's card claimed this trip would take, captured at the
+    # moment the courier tapped accept. The engine keeps it for exactly one
+    # purpose: `record_trip` on completion, so the agent can learn how much
+    # the app under-promises per zone. Nothing else reads it, and the POLICY
+    # never sees it from here — it had the same card on screen.
+    promised_minutes: float = 0.0
 
 
 @dataclass
@@ -152,6 +176,9 @@ class _RuntimeState:
     leg_progress: float = 0.0
     current_order_offer: OrderOffer | None = None
     current_kitchen_wait: float = 0.0
+    # The app's promised minutes for the job in hand, carried from accept to
+    # settlement so `record_trip` can compare it against what it really took.
+    current_promised_minutes: float = 0.0
     current_delivery_km: float = 0.0
     current_delivery_minutes: float = 0.0
     route_counter: int = 0
@@ -212,7 +239,7 @@ def run_shift(
     scenario: Scenario,
     policy: Policy,
     platform: PlatformPort,
-    enrichment: EnrichmentPort,
+    sources: RawSourcePort,
     recorder: RecorderPort | None = None,
     *,
     travel: TravelOracle | None = None,
@@ -221,9 +248,10 @@ def run_shift(
 ) -> ShiftResult:
     """Run one courier through one shift and return the `ShiftResult`.
 
-    Depends only on the ports (`Policy`, `PlatformPort`, `EnrichmentPort`,
+    Depends only on the ports (`Policy`, `PlatformPort`, `RawSourcePort`,
     `RecorderPort`, `TravelOracle`) plus `src.world` ground truth — never on
-    a concrete adapter. `travel` defaults to the real
+    a concrete adapter. `sources` is passed THROUGH to the policy rather
+    than read on its behalf: this function never assembles a belief. `travel` defaults to the real
     `NetworkTravelOracle` (expensive to build; pass one in and reuse it
     across runs against the same date rather than rebuilding per call).
     `home_cell` defaults to `_default_home_cell()`.
@@ -284,11 +312,11 @@ def run_shift(
         known_cells = set(geo.load_cell_index()["cell"].tolist())
     target_cell_cache: dict[str, str | None] = {}
 
-    # Optional capability beyond the bare EnrichmentPort protocol: a real
-    # enrichment adapter learns kitchen speed from the courier's own
-    # experience and needs to be told what that experience was. A minimal
-    # test double that does not implement it simply never learns.
-    record_kitchen_visit = getattr(enrichment, "record_kitchen_visit", None)
+    # The two things only the engine can tell the agent's history, because
+    # only the engine watched them happen. A minimal test double that
+    # implements neither simply never learns anything.
+    record_kitchen = getattr(sources, "record_kitchen", None)
+    record_trip = getattr(sources, "record_trip", None)
 
     # -- small helpers closing over the mutable state above -----------------
 
@@ -400,8 +428,22 @@ def run_shift(
             kitchen_wait_minutes=state.current_kitchen_wait,
         )
         deliveries.append(record)
+        if record_trip is not None and order_state.minutes_actual:
+            # Promised against realised, for the leg the app actually quoted:
+            # restaurant to customer. This is the entire input to the agent's
+            # self-calibration, and the engine is the only party that saw both
+            # halves of it.
+            record_trip(
+                order_state.restaurant.cell,
+                order_state.destination.cell,
+                minute,
+                state.current_promised_minutes,
+                float(order_state.minutes_actual),
+                float(order_state.km_actual or 0.0),
+            )
         state.current_order_offer = None
         state.current_kitchen_wait = 0.0
+        state.current_promised_minutes = 0.0
         return record
 
     def _arrive(minute: int, leg: TripLeg) -> None:
@@ -424,8 +466,8 @@ def run_shift(
             # genuinely cannot see past, which is the honest reading. Never
             # `prep_minutes` directly: that would hand the courier a number
             # nobody told them.
-            if record_kitchen_visit is not None:
-                record_kitchen_visit(
+            if record_kitchen is not None:
+                record_kitchen(
                     order_offer.restaurant_denue_id, float(elapsed_since_accept + wait), minute
                 )
             if wait > 0:
@@ -557,6 +599,7 @@ def run_shift(
         )
         courier.active_orders.append(order_state)
         state.current_order_offer = order
+        state.current_promised_minutes = job.promised_minutes
         km, minutes = travel.travel(courier.cell, order.origin_cell, minute)
         minutes = max(minutes, HANDLING_CALIBRATION["min_leg_minutes"])
         leg = TripLeg(
@@ -572,7 +615,7 @@ def run_shift(
         state.phase = _Phase.MOVING
         state.current_route_id = _start_route(courier.cell, order.origin_cell)
 
-    def _apply_decision(decision: Decision, minute: int, offered_order_ids: frozenset[str], *,
+    def _apply_decision(decision: Decision, minute: int, offered_cards: dict[str, OfferCard], *,
                         free_to_act: bool) -> None:
         """Apply one policy decision.
 
@@ -588,7 +631,7 @@ def run_shift(
             # minute it spawns and no other, so the ground-truth lookup is
             # keyed on THIS minute. There is no offer store to consult.
             order = next((o for o in orders_by_minute.get(minute, []) if o.order_id == decision.order_id), None)
-            if order is None and decision.order_id in offered_order_ids:
+            if order is None and decision.order_id in offered_cards:
                 # The platform showed this exact order_id this exact tick
                 # (it is in `view.offers`), so a failed lookup here is NOT a
                 # stale/invalid reference from the policy — it means
@@ -616,7 +659,14 @@ def run_shift(
                 # courier can ride for it now or has to finish the job in
                 # hand first — which is the entire value of committing
                 # early, and the entire risk of committing to the wrong one.
-                state.queued_jobs.append(_AcceptedJob(order=order, accepted_at_min=minute))
+                card = offered_cards.get(decision.order_id)
+                state.queued_jobs.append(
+                    _AcceptedJob(
+                        order=order,
+                        accepted_at_min=minute,
+                        promised_minutes=float(card.eta_minutes) if card is not None else 0.0,
+                    )
+                )
                 state.offers_accepted += 1
                 if state.phase is _Phase.IDLE and not courier.active_orders:
                     _start_next_job(minute)
@@ -700,11 +750,20 @@ def run_shift(
                 ),
             )
 
-        # 3. Enrichment runs every tick regardless of activity — a courier's
-        #    own tools keep working mid-delivery, and so does their phone.
+        # 3. What the courier COULD perceive this minute, for the tick
+        #    record. Read every tick regardless of activity, because a
+        #    courier's own tools keep working mid-delivery and because a
+        #    replay has to be able to show "the agent learned about the crash
+        #    at 149" honestly. This is the ONLY thing the engine reads off
+        #    the raw sources: the beliefs a decision rests on are assembled
+        #    by the policy, not here.
         pre_snapshot = _build_snapshot(minute, _activity_for(state.phase, _current_purpose()))
-        observation = enrichment.observe(minute, pre_snapshot)
-        perceived_event_ids = tuple(pe.event_id for pe in observation.perceived_events)
+        perceived_event_ids = tuple(
+            event.event_id
+            for event in sources.perceived_disruptions(
+                pre_snapshot.lat, pre_snapshot.lon, minute
+            )
+        )
 
         # 4. Offer flow. The app shows a FLOW of offers, and each one lives
         #    for this minute only — accept it now or somebody else takes it.
@@ -727,9 +786,9 @@ def run_shift(
 
             offers_shown = len(view.offers) if view is not None else 0
             if view is not None and (free_to_act or view.offers):
-                decision = policy.decide(view, observation, pre_snapshot)
-                offered_order_ids = frozenset(offer.order_id for offer in view.offers)
-                _apply_decision(decision, minute, offered_order_ids, free_to_act=free_to_act)
+                decision = policy.decide(view, sources, pre_snapshot)
+                offered_cards = {offer.order_id: offer for offer in view.offers}
+                _apply_decision(decision, minute, offered_cards, free_to_act=free_to_act)
 
         delivered = _advance_phase(minute)
         courier.minutes_elapsed += TICK_MINUTES

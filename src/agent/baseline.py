@@ -34,6 +34,11 @@ and the payout floor is applied to the gross payout on the card rather than
 to anything net of fuel, wear, kitchen wait or the unpaid minutes afterwards.
 That is exactly the naivety being measured: the number on the card is not the
 number in the courier's pocket.
+
+Both are handed the same `RawSourcePort` the smart policy is, and neither
+asks it a single question. That is not an oversight either — it is the
+comparison. An unaided courier has a weather app and a map too; what they do
+not do is query them and do arithmetic before every tap.
 """
 
 from __future__ import annotations
@@ -43,10 +48,10 @@ from src.core.ports import (
     CourierSnapshot,
     Decision,
     DecisionTrace,
-    Observation,
     OfferCard,
     OfferEvaluation,
     PlatformView,
+    RawSourcePort,
     ScoreFactor,
 )
 
@@ -83,7 +88,7 @@ class AcceptAllPolicy:
     name: str = "accept_all"
 
     def decide(
-        self, view: PlatformView, observation: Observation, courier: CourierSnapshot
+        self, view: PlatformView, sources: RawSourcePort, courier: CourierSnapshot
     ) -> Decision:
         if not view.offers:
             return Decision(
@@ -193,17 +198,21 @@ class FixedPayoutThresholdPolicy:
             return False
         return courier.acceptance_rate < BASELINE_CALIBRATION["acceptance_rescue_rate"]
 
-    def _floor_now(self, observation: Observation, courier: CourierSnapshot) -> float:
+    def _floor_now(self, courier: CourierSnapshot) -> float:
         """The floor this minute: relaxed near the bell, suspended when the
-        app has started starving the courier for a low acceptance rate."""
+        app has started starving the courier for a low acceptance rate.
+
+        Both inputs are self-knowledge off `CourierSnapshot` — a courier
+        knows the time and their own acceptance rate without asking anybody.
+        """
         if self._starved(courier):
             return 0.0
-        if float(observation.minutes_left_in_shift) <= BASELINE_CALIBRATION["late_shift_minutes"]:
+        if float(courier.minutes_left_in_shift) <= BASELINE_CALIBRATION["late_shift_minutes"]:
             return self._floor_mxn * BASELINE_CALIBRATION["late_shift_floor_factor"]
         return self._floor_mxn
 
     def decide(
-        self, view: PlatformView, observation: Observation, courier: CourierSnapshot
+        self, view: PlatformView, sources: RawSourcePort, courier: CourierSnapshot
     ) -> Decision:
         if not view.offers:
             return Decision(
@@ -214,7 +223,7 @@ class FixedPayoutThresholdPolicy:
             )
 
         starved = self._starved(courier)
-        floor = self._floor_now(observation, courier)
+        floor = self._floor_now(courier)
         # Why the floor is not the calibrated one, if it is not: the two get
         # different words in the trace, because they are different reasons.
         relaxation = (

@@ -55,6 +55,24 @@ def restaurant_weight_by_cell() -> dict[str, float]:
     return _restaurant_weight_by_cell(str(RESTAURANTS_FIXTURE_PATH))
 
 
+@lru_cache(maxsize=1)
+def _poi_table(path: str) -> pd.DataFrame:
+    return pd.read_parquet(path, columns=["lat", "lon", "weight", "cell"])
+
+
+def poi_table() -> pd.DataFrame:
+    """Food POIs as (lat, lon, weight, cell), and nothing else.
+
+    Deliberately narrowed to those four columns: this is the shape an OSM
+    POI query over a bounding box returns in any city, and it is the only
+    shape the portable half of this package is allowed to see. The fixture
+    behind it is this simulator's stand-in for that query — the simulator
+    IS the world, and the world is allowed Mexico-only sources; the agent
+    and the raw-source adapter are not.
+    """
+    return _poi_table(str(RESTAURANTS_FIXTURE_PATH))
+
+
 def estimate_demand(
     minute: int,
     day_type: str,

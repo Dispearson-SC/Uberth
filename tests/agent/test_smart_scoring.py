@@ -19,7 +19,7 @@ def evaluation_for(trace, order_id: str):
 
 
 def test_short_well_paid_offer_beats_long_badly_paid_one() -> None:
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_1700,
         at_cell="MTY-C",
         offers=(
@@ -28,7 +28,7 @@ def test_short_well_paid_offer_beats_long_badly_paid_one() -> None:
         ),
     )
 
-    decision = SmartPolicy().decide(view, observation, courier)
+    decision = SmartPolicy().decide(view, sources, courier)
 
     assert decision.action is Action.ACCEPT
     assert decision.order_id == "SHORT_RICH"
@@ -38,7 +38,7 @@ def test_short_well_paid_offer_beats_long_badly_paid_one() -> None:
 
 
 def test_far_pickup_loses_to_a_near_one_at_equal_pay() -> None:
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_1700,
         at_cell="MTY-C",
         offers=(
@@ -47,7 +47,7 @@ def test_far_pickup_loses_to_a_near_one_at_equal_pay() -> None:
         ),
     )
 
-    decision = SmartPolicy().decide(view, observation, courier)
+    decision = SmartPolicy().decide(view, sources, courier)
 
     assert decision.order_id == "NEAR_PICKUP"
     near = evaluation_for(decision.trace, "NEAR_PICKUP")
@@ -59,7 +59,7 @@ def test_far_pickup_loses_to_a_near_one_at_equal_pay() -> None:
 def test_offer_into_a_dead_zone_loses_to_an_equally_paid_one_into_a_busy_zone() -> None:
     # Identical pay and identical leg lengths: MTY-N -> MTY-NN and MTY-N -> MTY-SC
     # are both 4.4 km. Only the demand at the destination differs.
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_1700,
         at_cell="MTY-N",
         demand={"MTY-N": 0.5, "MTY-NN": 0.9, "MTY-SC": 0.03, "MTY-C": 0.5},
@@ -69,7 +69,7 @@ def test_offer_into_a_dead_zone_loses_to_an_equally_paid_one_into_a_busy_zone() 
         ),
     )
 
-    decision = SmartPolicy().decide(view, observation, courier)
+    decision = SmartPolicy().decide(view, sources, courier)
 
     assert decision.order_id == "INTO_BUSY"
     busy = evaluation_for(decision.trace, "INTO_BUSY")
@@ -81,7 +81,7 @@ def test_offer_into_a_dead_zone_loses_to_an_equally_paid_one_into_a_busy_zone() 
 def test_high_score_on_a_low_confidence_belief_is_discounted_below_a_solid_one() -> None:
     # Same geometry, same destination. GUESS pays more but its kitchen estimate
     # is barely believed; KNOWN pays less and is backed by a solid memory.
-    view, observation, courier = scenario(
+    view, sources, courier = scenario(
         minute=MINUTE_1700,
         at_cell="MTY-N",
         kitchen={
@@ -106,7 +106,7 @@ def test_high_score_on_a_low_confidence_belief_is_discounted_below_a_solid_one()
         ),
     )
 
-    decision = SmartPolicy().decide(view, observation, courier)
+    decision = SmartPolicy().decide(view, sources, courier)
 
     guess = evaluation_for(decision.trace, "GUESS")
     known = evaluation_for(decision.trace, "KNOWN")
@@ -124,9 +124,9 @@ def test_it_uses_its_own_travel_model_not_the_app_eta() -> None:
         eta_minutes=3.0,  # the app is lying to the courier
         distance_km=1.0,
     )
-    view, observation, courier = scenario(minute=MINUTE_1700, at_cell="MTY-C", offers=(offer,))
+    view, sources, courier = scenario(minute=MINUTE_1700, at_cell="MTY-C", offers=(offer,))
 
-    decision = SmartPolicy().decide(view, observation, courier)
+    decision = SmartPolicy().decide(view, sources, courier)
 
     evaluation = evaluation_for(decision.trace, "OPTIMISTIC")
     assert evaluation.expected_minutes > 4 * offer.eta_minutes
@@ -134,13 +134,13 @@ def test_it_uses_its_own_travel_model_not_the_app_eta() -> None:
 
 
 def test_believed_traffic_slows_an_offer_down() -> None:
-    clear_view, clear_obs, courier = scenario(
+    clear_view, clear_sources, courier = scenario(
         minute=MINUTE_1700,
         at_cell="MTY-C",
         traffic={"MTY-C": 1.0, "MTY-E": 1.0},
         offers=(make_offer("A", pickup_cell="MTY-C", dropoff_cell="MTY-E", payout_mxn=80.0),),
     )
-    jam_view, jam_obs, _ = scenario(
+    jam_view, jam_sources, _ = scenario(
         minute=MINUTE_1700,
         at_cell="MTY-C",
         traffic={"MTY-C": 1.0, "MTY-E": 2.2},
@@ -148,8 +148,8 @@ def test_believed_traffic_slows_an_offer_down() -> None:
     )
     policy = SmartPolicy()
 
-    clear = evaluation_for(policy.decide(clear_view, clear_obs, courier).trace, "A")
-    jammed = evaluation_for(policy.decide(jam_view, jam_obs, courier).trace, "A")
+    clear = evaluation_for(policy.decide(clear_view, clear_sources, courier).trace, "A")
+    jammed = evaluation_for(policy.decide(jam_view, jam_sources, courier).trace, "A")
 
     assert jammed.expected_minutes > clear.expected_minutes
     assert jammed.expected_km == clear.expected_km  # km and minutes are separate

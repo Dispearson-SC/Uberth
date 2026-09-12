@@ -359,6 +359,81 @@ validates an artifact's central claim must fail hard, never warn.
 
 ---
 
+## D14 — Six seeds was not a sample, and the headline was wrong
+
+**Decided:** every reported margin is measured on 18 seeds, and the result
+we state is **pesos per kilometre driven**, not pesos per hour.
+
+**Why.** D-nothing here was a design choice; this is a correction. The
+headline in AGENT_MODEL.md §10 read "+23.1% over accept-everything, wins
+6/6". Re-measured on 18 seeds, the same comparison is **+6.2%, wins 12/18**.
+Against the 55-peso payout floor, −2.8% on 6 seeds becomes **−3.5% on 18,
+winning 7/18**.
+
+The per-seed margin against the floor spans **−40.2% to +58.3%**. Six draws
+out of that distribution cannot resolve a mean difference of a few per
+cent. The 6-seed set was not cherry-picked on purpose — it was the set that
+existed when the first comparison was run, and it was never widened. That
+is how a favourable sample becomes a headline without anybody deciding to
+mislead.
+
+**The figure that survives the wider sample:**
+
+| pesos per kilometre DRIVEN | 6 seeds | 18 seeds |
+|---|---|---|
+| accept-everything | 4.11 | 4.52 |
+| 55-peso payout floor | 5.27 | 5.41 |
+| smart | 9.10 | 9.42 |
+| smart vs the floor | +73% | **+74%, wins 18/18** |
+
+**+73% against +74%.** The MXN/hour margin moved 17 points between the same
+two samples; this one moved one. It wins every seed, worst case +11.3%.
+
+**Why it is the right metric and not just the flattering one:** the app pays
+by the trip and says nothing about the kilometre, so gross takings measure
+the platform's objective, not the courier's. Measured on seed 42, the 13
+delivery records sum to 41.3 paid km while the courier drove 82.2 — **half
+the driving is unpaid** — and for the payout floor it is 58%. An agent
+optimising what a courier actually keeps optimises the kilometre.
+
+**Stated the other way, because it has to be:** on seed 42, the demo seed,
+the payout floor out-earns smart 1,158 to 789 MXN. The claim is return per
+kilometre. Never gross takings.
+
+**The method rule this leaves behind:** before a number becomes a claim,
+re-measure it on a wider sample and report how much it moved. A margin that
+changes by 17 points between samples was never a result; it was a draw.
+
+---
+
+## D15 — The port decides what can be learned, and it currently forbids four things
+
+**Found, not decided:** four of the six relationship functions promised in
+AGENT_MODEL.md §8 cannot be fitted through `RawSourcePort` as it stands.
+
+| §8 function | Blocked by |
+|---|---|
+| `arrival_rate(cell, hour)` | no `record_offer_seen(cell, minute)` |
+| `dead_minutes(dest_cell, hour)` | no `record_idle(cell, minutes)` |
+| `kitchen_minutes(venue, hour)` | `recall_kitchen` takes no minute |
+| the app's km bias | `record_trip` carries no `promised_km` |
+
+**Why this matters beyond a to-do list:** the night-window deficit, open
+since the first evaluation, is a *direct consequence* of the first row. The
+reservation price uses a city-wide lifetime-average arrival rate, so it
+stays at dinner-peak height through three dead hours after midnight. The
+recency-windowed fix measured worse because the same rate also inflates
+every destination's dead-minute estimate — and decoupling the two uses
+requires a per-cell offer history **the port cannot record**.
+
+So this is not a missing feature in the agent. **The port's shape is what
+bounds what the agent can ever learn**, and that boundary was invisible
+until someone tried to fit the tables. Worth stating as a decision because
+it sets the order of work: widening the port comes before any further
+attempt at the night window.
+
+---
+
 ## Open items — diagnosed, not hidden
 
 | Item | Status |
@@ -366,6 +441,6 @@ validates an artifact's central claim must fail hard, never warn.
 | `self_check` fails on deliveries/hour and MXN/h | Thresholds untouched. Dominant cycle component is the ride TO the restaurant, not kitchen wait. |
 | Night window loses 22% to accept-everything | Cause found: the reservation price uses a lifetime-average arrival rate, so it stays at dinner-peak height through three dead hours after midnight. The obvious fix — a recency window — measured WORSE, because the same rate also inflates every destination's dead-minute estimate. Needs the two uses decoupled. |
 | Day window surge at 25.8%, above the 6-18% band | A flat-profile control run shows 17.8%, so it predates the supply profile and lives in the surge constants. |
-| Smart does not beat a 55-peso payout floor on MXN/h | −2.8% on the reference window, winning 3 of 6 seeds. It does beat accept-everything by +23.1%, 6 of 6. The honest claim is the kilometres, not the pesos. |
+| Smart does not beat a 55-peso payout floor on MXN/h | −3.5% on 18 seeds, winning 7 of 18. Against accept-everything, +6.2%, winning 12 of 18. **The 6-seed figures this table used to quote (−2.8% and +23.1%, 6/6) are superseded — see D14.** The claim is pesos per kilometre driven: +74%, winning 18 of 18. |
 | On the demo seed specifically, the floor out-earns smart outright | Seed 42: 1,158 against 789 MXN in payout+tips. The same seed shows 199.2 km against 82.2, i.e. **9.60 against 5.81 MXN per kilometre driven**. State the return per kilometre; never the gross takings. |
 | Half of a courier's driving is unpaid, and that is not a bug | Measured on seed 42: the 13 delivery records sum to 41.3 km while the courier drove 82.2. The gap is the ride TO the restaurant plus repositioning. The floor's unpaid share is worse, 58% against 50%. The trips panel prints paid and unpaid separately for exactly this reason — two different kilometre figures on one screen read as a contradiction otherwise. |

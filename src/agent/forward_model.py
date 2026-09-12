@@ -7,6 +7,15 @@ at this minute, including the parts they believe wrongly. Same shape, different
 source, and that symmetry is what lets the policy plan without seeing the
 future.
 
+It reads a `BeliefState` the agent assembled itself by querying raw sources,
+rather than an `Observation` handed to it. Travel in particular is no longer
+derived here from a straight line and an assumed speed: km and free-flow
+minutes are PULLED, from a free-flow skeleton over the OSM drive graph plus a
+correction fitted from the agent's own completed trips. What is still computed
+here is what the agent does with that answer — the live congestion reading,
+the rain slowdown, and the blend that stops a learned correction and a visible
+jam being counted twice.
+
 Everything returned here carries a confidence, because everything it is built
 from does.
 """
@@ -15,8 +24,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.core.ports import Estimate, Observation, PerceivedEvent
+from src.core.ports import Estimate, PerceivedEvent
 
+from src.agent.beliefs import BeliefState
 from src.agent.calibration import (
     BELIEF_CALIBRATION,
     DESTINATION_CALIBRATION,
@@ -26,7 +36,7 @@ from src.agent.calibration import (
     SAFETY_CALIBRATION,
     TRAVEL_CALIBRATION,
 )
-from src.agent.geometry import CellIndex, haversine_km
+from src.agent.geometry import CellIndex
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -76,17 +86,17 @@ class PerceivedDelay:
 
 
 class ForwardModel:
-    """Reads one `Observation` and answers 'what would that cost me?'."""
+    """Reads one `BeliefState` and answers 'what would that cost me?'."""
 
-    def __init__(self, observation: Observation, index: CellIndex) -> None:
-        self._observation = observation
+    def __init__(self, beliefs: BeliefState, index: CellIndex) -> None:
+        self._beliefs = beliefs
         self._index = index
 
     # -- weather ---------------------------------------------------------
 
     @property
     def rain_multiplier(self) -> float:
-        precip = max(0.0, self._observation.precip_mm.value)
+        precip = max(0.0, self._beliefs.precip_mm.value)
         return min(
             TRAVEL_CALIBRATION["max_rain_multiplier"],
             1.0 + precip * TRAVEL_CALIBRATION["rain_slowdown_per_mm"],
@@ -119,7 +129,7 @@ class ForwardModel:
 
     def rain_risk_factor(self) -> float:
         return ramp(
-            max(0.0, self._observation.precip_mm.value),
+            max(0.0, self._beliefs.precip_mm.value),
             0.0,
             SAFETY_CALIBRATION["rain_risk_full_mm"],
         )
@@ -127,7 +137,7 @@ class ForwardModel:
     # -- traffic and travel ----------------------------------------------
 
     def traffic(self, cell: str) -> Belief:
-        estimate = self._observation.traffic_by_cell.get(cell)
+        estimate = self._beliefs.traffic_by_cell.get(cell)
         if estimate is None:
             return Belief(
                 value=TRAVEL_CALIBRATION["default_traffic_multiplier"],
@@ -137,47 +147,110 @@ class ForwardModel:
         return Belief(value=estimate.value, confidence=aged_confidence(estimate), known=True)
 
     def travel(self, from_lat: float, from_lon: float, to_lat: float, to_lon: float) -> LegEstimate:
-        """Believed km and minutes for one leg, using the courier's own traffic
-        picture. The app's `eta_minutes` is never consulted: it is the platform's
-        optimism, not the courier's estimate."""
-        straight_km = haversine_km(from_lat, from_lon, to_lat, to_lon)
-        if straight_km < TRAVEL_CALIBRATION["same_place_km"]:
+        """Believed km and minutes for one leg. The app's `eta_minutes` is
+        never consulted here: it is the platform's optimism, not the
+        courier's estimate.
+
+        Three layers, in the order a courier would describe them:
+
+          1. the geometry and the road, pulled from the agent's own OSM
+             skeleton via `RawSourcePort.travel_estimate`;
+          2. whatever its own completed trips taught it about this zone at
+             this hour, already folded into that answer by the port;
+          3. the traffic it can see RIGHT NOW, and the rain, applied here.
+
+        Layers 2 and 3 estimate the same thing from different angles, so
+        they are blended rather than multiplied. With nothing learned the
+        live reading carries the whole correction, exactly as it did when
+        this model derived everything itself. With a well-evidenced
+        correction in hand the live multiplier is dropped, because "legs
+        into this zone at this hour take 1.4x the skeleton" already contains
+        the typical jam, and applying both counts it twice.
+        """
+        cal = TRAVEL_CALIBRATION
+        km_estimate, minutes_estimate = self._beliefs.travel(from_lat, from_lon, to_lat, to_lon)
+        if km_estimate.value <= 0.0:
             return LegEstimate(km=0.0, minutes=0.0, traffic_multiplier=1.0, confidence=1.0)
 
-        km = straight_km * TRAVEL_CALIBRATION["street_detour_factor"]
         origin = self.traffic(self._index.nearest(from_lat, from_lon))
         destination = self.traffic(self._index.nearest(to_lat, to_lon))
-        multiplier = (origin.value + destination.value) / 2.0
-        free_flow_minutes = km / TRAVEL_CALIBRATION["free_flow_speed_kmh"] * 60.0
-        minutes = free_flow_minutes * multiplier * self.rain_multiplier
+        live_multiplier = (origin.value + destination.value) / 2.0
+        live_confidence = (origin.confidence + destination.confidence) / 2.0
+
+        learned = ramp(
+            minutes_estimate.confidence,
+            cal["structural_only_confidence"],
+            cal["fully_learned_confidence"],
+        )
+        multiplier = live_multiplier * (1.0 - learned) + learned
+        minutes = minutes_estimate.value * multiplier * self.rain_multiplier
         return LegEstimate(
-            km=km,
-            minutes=max(TRAVEL_CALIBRATION["min_leg_minutes"], minutes),
+            km=km_estimate.value,
+            minutes=max(cal["min_leg_minutes"], minutes),
             traffic_multiplier=multiplier,
-            confidence=(origin.confidence + destination.confidence) / 2.0,
+            confidence=live_confidence * (1.0 - learned) + minutes_estimate.confidence * learned,
+        )
+
+    def reconcile_with_app_eta(
+        self, leg: LegEstimate, cell: str, app_eta_minutes: float
+    ) -> LegEstimate:
+        """Blend the agent's own leg estimate with the app's ETA, corrected
+        by how much the app has lied in this zone before.
+
+        The purest arbitrage available to a courier, and entirely
+        self-learned: it needs no external source at all. The app says
+        eleven minutes and it took nineteen; after enough trips the agent
+        knows that ratio per zone better than the platform will admit, and
+        `app_eta x bias` is then a second, independent estimate of the same
+        quantity. Two independent estimates are weighted by their own
+        confidences rather than one overruling the other.
+
+        Returns the leg unchanged when there is no fitted bias — which is
+        the whole of shift one in a city the agent has never worked.
+        """
+        bias = self._beliefs.app_eta_bias(cell)
+        if bias is None or app_eta_minutes <= 0.0 or leg.minutes <= 0.0:
+            return leg
+        corrected = app_eta_minutes * bias.value
+        total = bias.confidence + leg.confidence
+        if total <= 0.0:
+            return leg
+        weight = bias.confidence / total
+        return LegEstimate(
+            km=leg.km,
+            minutes=max(
+                TRAVEL_CALIBRATION["min_leg_minutes"],
+                leg.minutes * (1.0 - weight) + corrected * weight,
+            ),
+            traffic_multiplier=leg.traffic_multiplier,
+            confidence=max(leg.confidence, bias.confidence),
         )
 
     # -- kitchens --------------------------------------------------------
 
-    def kitchen_wait(self, denue_id: str, restaurant_name: str = "") -> Belief:
+    def kitchen_wait(self, venue_key: str, restaurant_name: str = "") -> Belief:
         """How long this kitchen is believed to take.
 
-        `Observation.kitchen_minutes_by_denue_id` is keyed by DENUE id, and
-        `OfferCard.restaurant_denue_id` carries that exact id — it is the
-        stable join key the card exists to provide, and looking memory up by
-        `restaurant_name` instead (as an earlier revision did, before the
-        card carried an id) meant the lookup NEVER hit and every kitchen was
-        scored at the cold-start prior for the whole shift. Learned kitchen
-        speed was dead weight.
+        Queried per offer rather than received as a whole map. That is both
+        what a courier actually does — you look up the one branch you are
+        being sent to — and what keeps this answerable in a city where the
+        agent has visited nothing at all.
 
-        `restaurant_name` stays as a fallback for the case where a platform
-        supplies no id at all: the name is then the only identifier on the
-        card, and matching on it is better than not matching.
+        `venue_key` is `OfferCard.restaurant_denue_id`: an OPAQUE venue
+        identifier the platform prints next to the branch, never parsed here
+        and never resolved against any registry. A courier plainly sees
+        which branch they are being sent to, and remembering that this one
+        is always slow is exactly the knowledge a good courier accumulates.
+        Looking memory up by `restaurant_name` instead — as an earlier
+        revision did, before the card carried a key — meant the lookup NEVER
+        hit and every kitchen was scored at the cold-start prior for a whole
+        shift.
+
+        `restaurant_name` stays as the fallback for a platform that supplies
+        no key at all: the name is then the only identifier on the card, and
+        matching on it beats not matching.
         """
-        memory = self._observation.kitchen_minutes_by_denue_id
-        estimate = memory.get(denue_id) if denue_id else None
-        if estimate is None and restaurant_name:
-            estimate = memory.get(restaurant_name)
+        estimate = self._beliefs.kitchen(venue_key, restaurant_name)
         if estimate is None:
             return Belief(
                 value=HANDLING_CALIBRATION["default_kitchen_minutes"],
@@ -198,12 +271,12 @@ class ForwardModel:
         believe.
 
         The first source is the one that carries the shift now that
-        `Observation.cell_coords` places every cell in `demand_by_cell`.
+        `BeliefState.cell_coords` places every cell in `demand_by_cell`.
         Before it did, that lookup missed almost everywhere — the courier
         could only place a fine-grid cell by having stood in it — and the
         heatmap fallback was doing nearly all the work.
         """
-        estimate = self._observation.demand_by_cell.get(cell)
+        estimate = self._beliefs.demand_by_cell.get(cell)
         if estimate is not None:
             return Belief(value=estimate.value, confidence=aged_confidence(estimate), known=True)
         if lat is not None and lon is not None:
@@ -251,13 +324,13 @@ class ForwardModel:
     def delays_on(self, cells: tuple[str, ...]) -> list[PerceivedDelay]:
         """Delays from events the courier can perceive RIGHT NOW.
 
-        Only `observation.perceived_events` is read. There is no other source of
+        Only `BeliefState.perceived_events` is read. There is no other source of
         events reachable from this package, which is the point: a trace can only
         cite what this returns.
         """
         touched = {cell for cell in cells if cell}
         delays: list[PerceivedDelay] = []
-        for event in self._observation.perceived_events:
+        for event in self._beliefs.perceived_events:
             if not touched.intersection(event.affects_cells):
                 continue
             believed = event.expected_delay_minutes.value * clamp(event.confidence, 0.0, 1.0)

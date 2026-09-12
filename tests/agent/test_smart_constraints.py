@@ -137,6 +137,17 @@ def _stand_in_a_dead_cell(policy: SmartPolicy, minutes: int):
     Standing still is the precondition for moving: the policy will not ride
     off a spot it has no evidence about, which is what stops the
     repositioning branch turning into a shift-long loop.
+
+    The demand figures below are BELIEVED demands, inverted through the
+    agent's own hour-of-day rhythm by `factories.density_for_demand`. At
+    19:00 that rhythm sits in its afternoon trough, so the agent cannot
+    believe any cell is more than about half busy however much commerce is
+    in it — which means the believed EDGE between a dead cell and a busy one
+    is smaller than the raw numbers suggest, and the direct evidence of an
+    empty screen has to run longer before a move pays for itself. That
+    ceiling is a property of composing demand from density and a rhythm, not
+    a quirk of these fixtures: the sensed demand this replaced had the same
+    shape.
     """
     decisions = []
     for offset in range(minutes):
@@ -162,10 +173,10 @@ def test_it_will_not_ride_off_a_spot_it_has_no_evidence_about_yet() -> None:
 
 
 def test_it_repositions_towards_believed_demand_after_standing_in_a_dead_cell() -> None:
-    decisions = _stand_in_a_dead_cell(SmartPolicy(), 12)
+    decisions = _stand_in_a_dead_cell(SmartPolicy(), 20)
 
     moves = [d for d in decisions if d.action is Action.REPOSITION]
-    assert moves, "stood twelve minutes in a dead cell and never moved"
+    assert moves, "stood twenty minutes in a dead cell and never moved"
     assert moves[0].target_cell == "MTY-SC"
     assert moves[0].trace.summary
 

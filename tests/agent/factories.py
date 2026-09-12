@@ -2,11 +2,29 @@
 
 Nothing here touches `src/world/`, `src/engine/`, a file, or a network. The
 whole point of the port boundary is that a policy can be tested from plain
-dataclasses, so these builders construct `PlatformView`, `Observation` and
-`CourierSnapshot` by hand.
+dataclasses, so these builders construct `PlatformView`, a `FakeRawSource`
+and `CourierSnapshot` by hand.
 
-Geography is a small made-up grid over Monterrey. Cell ids are opaque to the
-agent, so readable names are used here instead of real H3 indices.
+WHAT CHANGED WHEN PERCEPTION WENT FROM PUSH TO PULL. There is no longer an
+`Observation` to build: the policy holds a `RawSourcePort` and asks it
+questions, so a test states what each SOURCE would answer and the policy
+composes its own belief out of that. `FakeRawSource` (see `fakes.py`) is
+that stand-in, and it can express what the agent could NOT find out, which
+a finished `Observation` never could.
+
+One consequence worth naming, because it changes what a number in a test
+means. Believed demand is no longer stated; it is COMPOSED, from the map's
+food-commerce density times the agent's own hour-of-day rhythm, banded into
+five levels. So `poi_density=` states the map reading, and `demand=` is a
+convenience that works backwards from a believed demand to the density that
+produces it at that minute — with a ceiling, because at a quiet hour the
+agent cannot believe anywhere is busy no matter how much commerce sits
+there. That ceiling is real, not a fixture artefact: the previous sensed
+demand had exactly the same shape.
+
+Geography is a small made-up grid at around 25 degrees north. Cell ids are
+opaque to the agent, so readable names are used here instead of real H3
+indices.
 """
 
 from __future__ import annotations
@@ -19,11 +37,14 @@ from src.core.ports import (
     CourierSnapshot,
     Estimate,
     HeatCell,
-    Observation,
     OfferCard,
     PerceivedEvent,
     PlatformView,
 )
+
+from src.agent.beliefs import meal_rhythm
+from src.agent.calibration import DEMAND_PRIOR_CALIBRATION
+from tests.agent.fakes import FakeRawSource
 
 # Cell centroids. Roughly 1 km per 0.009 degrees at this latitude.
 CELLS: dict[str, tuple[float, float]] = {
@@ -116,47 +137,80 @@ def make_view(
     )
 
 
-def make_observation(
+def density_for_demand(demand_value: float, minute: int) -> float:
+    """The map reading that makes the agent believe `demand_value` right now.
+
+    The agent composes demand as `poi_density x meal_rhythm(minute)`, so a
+    test that wants to say "the courier believes this cell is dead and that
+    one is busy" has to work backwards through the rhythm. Clamped at 1.0:
+    at a quiet hour no amount of commerce makes the agent believe a cell is
+    busy, and that ceiling is a property of the model rather than of this
+    helper.
+    """
+    rhythm = meal_rhythm(minute)
+    if rhythm <= 0.0:
+        return 1.0
+    return min(1.0, max(0.0, demand_value / rhythm))
+
+
+def believed_demand(density_value: float, minute: int) -> float:
+    """What the agent will actually believe, given a map reading. Banded
+    exactly as `BeliefState._compose_demand` bands it, so a test can assert
+    on the number the policy will see rather than the one it asked for."""
+    bands = max(int(DEMAND_PRIOR_CALIBRATION["bands"]), 2)
+    value = min(1.0, max(0.0, density_value * meal_rhythm(minute)))
+    return round(value * (bands - 1)) / (bands - 1)
+
+
+def make_sources(
     *,
     minute: int,
-    at_cell: str = HOME_CELL,
     demand: dict[str, float] | None = None,
-    demand_confidence: float = 0.8,
+    poi_density: dict[str, float] | None = None,
+    density_confidence: float = 0.8,
     traffic: dict[str, float] | None = None,
     traffic_confidence: float = 0.85,
     kitchen: dict[str, Estimate] | None = None,
     events: tuple[PerceivedEvent, ...] = (),
-    minutes_left_in_shift: int = 240,
-    km_to_home: float | None = None,
-    fuel_minutes_remaining: float = 180.0,
+    eta_bias: dict[str, Estimate] | None = None,
+    travel_correction: Estimate | None = None,
     precip_mm: float = 0.0,
     temp_c: float = 24.0,
     cell_coords: dict[str, tuple[float, float]] | None = None,
-) -> Observation:
-    at_lat, at_lon = CELLS[at_cell]
-    demand = demand if demand is not None else {cell: 0.5 for cell in CELLS}
+) -> FakeRawSource:
+    """Every source the policy can query, stated explicitly.
+
+    `demand` states BELIEVED demand and is inverted through the rhythm;
+    `poi_density` states the raw map reading directly. Give one or the
+    other. Omitting both puts the whole grid at a middling density.
+    """
+    if poi_density is None:
+        if demand is None:
+            demand = {cell: 0.5 for cell in CELLS}
+        poi_density = {
+            cell: density_for_demand(value, minute) for cell, value in demand.items()
+        }
     traffic = traffic if traffic is not None else {cell: 1.0 for cell in CELLS}
-    # What the real `EnrichmentAdapter` supplies: a coordinate for every
-    # cell named in either belief map. Default to the whole test grid, which
-    # is what the two maps above cover.
+    # What the real adapter supplies: a coordinate for every cell any
+    # source named. Default to the whole test grid, which is what the two
+    # maps above cover.
     if cell_coords is None:
-        cell_coords = {cell: CELLS[cell] for cell in set(demand) | set(traffic) if cell in CELLS}
-    return Observation(
-        minute=minute,
-        at_lat=at_lat,
-        at_lon=at_lon,
-        at_cell=at_cell,
-        temp_c=sure(temp_c),
-        apparent_c=sure(temp_c + 1.0),
-        precip_mm=sure(precip_mm),
-        traffic_by_cell={c: sure(v, traffic_confidence) for c, v in traffic.items()},
-        perceived_events=events,
-        kitchen_minutes_by_denue_id=dict(kitchen or {}),
-        demand_by_cell={c: sure(v, demand_confidence) for c, v in demand.items()},
-        minutes_left_in_shift=minutes_left_in_shift,
-        km_to_home=km_to_home if km_to_home is not None else straight_km(at_cell, HOME_CELL),
-        fuel_minutes_remaining=fuel_minutes_remaining,
+        cell_coords = {
+            cell: CELLS[cell] for cell in set(poi_density) | set(traffic) if cell in CELLS
+        }
+    return FakeRawSource(
+        temp_c=temp_c,
+        precip_mm=precip_mm,
+        congestion={c: sure(v, traffic_confidence) for c, v in traffic.items()},
+        poi_density={
+            c: Estimate(value=v, confidence=density_confidence, age_minutes=0.0)
+            for c, v in poi_density.items()
+        },
+        disruptions=events,
         cell_coords=dict(cell_coords),
+        kitchen=dict(kitchen or {}),
+        eta_bias=dict(eta_bias or {}),
+        travel_correction=travel_correction,
     )
 
 
@@ -203,9 +257,12 @@ def scenario(
     offers: tuple[OfferCard, ...] = (),
     at_cell: str = HOME_CELL,
     demand: dict[str, float] | None = None,
+    poi_density: dict[str, float] | None = None,
     traffic: dict[str, float] | None = None,
     kitchen: dict[str, Estimate] | None = None,
     events: tuple[PerceivedEvent, ...] = (),
+    eta_bias: dict[str, Estimate] | None = None,
+    travel_correction: Estimate | None = None,
     minutes_left_in_shift: int = 240,
     fuel_minutes_remaining: float = 180.0,
     offers_seen: int = 20,
@@ -213,8 +270,12 @@ def scenario(
     heat_levels: dict[str, int] | None = None,
     precip_mm: float = 0.0,
     cell_coords: dict[str, tuple[float, float]] | None = None,
-) -> tuple[PlatformView, Observation, CourierSnapshot]:
-    """The three arguments `Policy.decide` takes, consistently built."""
+) -> tuple[PlatformView, FakeRawSource, CourierSnapshot]:
+    """The three arguments `Policy.decide` takes, consistently built.
+
+    The middle one is a PORT now, not a belief: the policy is handed sources
+    and assembles its own belief state from whatever it asks them.
+    """
     courier = make_courier(
         minute=minute,
         cell=at_cell,
@@ -229,19 +290,19 @@ def scenario(
         heat_levels=heat_levels,
         acceptance_rate=courier.acceptance_rate,
     )
-    observation = make_observation(
+    sources = make_sources(
         minute=minute,
-        at_cell=at_cell,
         demand=demand,
+        poi_density=poi_density,
         traffic=traffic,
         kitchen=kitchen,
         events=events,
-        minutes_left_in_shift=minutes_left_in_shift,
-        fuel_minutes_remaining=fuel_minutes_remaining,
+        eta_bias=eta_bias,
+        travel_correction=travel_correction,
         precip_mm=precip_mm,
         cell_coords=cell_coords,
     )
-    return view, observation, courier
+    return view, sources, courier
 
 
 def make_event(

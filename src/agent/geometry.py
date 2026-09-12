@@ -5,7 +5,7 @@ north". That is all this module does: great-circle distance, and matching a
 coordinate to the nearest cell of the in-app heatmap.
 
 The agent's spatial index is whatever its own tools name and place: the app's
-coarse heatmap cells, plus every cell `Observation.cell_coords` gives a
+coarse heatmap cells, plus every cell `BeliefState.cell_coords` gives a
 coordinate for. It knows no other grid, cannot enumerate the city, and never
 places a cell it has not been told about.
 """
@@ -39,6 +39,19 @@ class CellIndex:
     fallback_cell: str
     # Quantised demand level per heatmap cell, straight off the app's map.
     levels: dict[str, int] = dataclasses_field(default_factory=dict)
+    # Memo for `nearest`/`nearest_level`, keyed on a coordinate rounded to
+    # about a metre. Not a micro-optimisation: `nearest` is a linear scan
+    # over every cell the courier can place, and weighing every reachable
+    # cell as a repositioning target calls it twice per candidate — which
+    # is tens of thousands of great-circle computations inside one seven-
+    # second decision. Pure function of the coordinate and this index, so
+    # the memo cannot change an answer.
+    _nearest: dict[tuple[float, float], str] = dataclasses_field(
+        default_factory=dict, repr=False, compare=False
+    )
+    _nearest_level: dict[tuple[float, float], int | None] = dataclasses_field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     @classmethod
     def from_heatmap(cls, heatmap, fallback_cell: str, cell_coords=None) -> "CellIndex":
@@ -46,15 +59,15 @@ class CellIndex:
 
         `heatmap` is what the app just showed: cell ids with coordinates.
         They are, however, the app's own COARSE display cells, and the cell
-        ids keyed in `Observation.traffic_by_cell` and
-        `Observation.demand_by_cell` are a finer grid — so resolving a
+        ids keyed in `BeliefState.traffic_by_cell` and
+        `BeliefState.demand_by_cell` are a finer grid — so resolving a
         coordinate against the heatmap alone produces a cell id that those
         two dictionaries never contain, and every traffic and demand lookup
         silently falls through to its prior. Measured, that meant the policy
         was scoring every offer at default traffic and default demand for an
         entire shift while believing it was reasoning about both.
 
-        `cell_coords` is `Observation.cell_coords`, which closes that gap
+        `cell_coords` is `BeliefState.cell_coords`, which closes that gap
         outright: the courier's own tools name a cell and say where it is,
         for every cell in either belief map. Somebody looking at the zones
         on their own app knows where those zones are, so this is not
@@ -80,6 +93,10 @@ class CellIndex:
         With an empty heatmap the agent has no spatial vocabulary at all, so it
         falls back to the only cell it knows: the one it is standing in.
         """
+        key = (round(lat, 5), round(lon, 5))
+        cached = self._nearest.get(key)
+        if cached is not None:
+            return cached
         best_cell = self.fallback_cell
         best_km = float("inf")
         for cell, (cell_lat, cell_lon) in self.coordinates.items():
@@ -87,6 +104,7 @@ class CellIndex:
             if km < best_km:
                 best_km = km
                 best_cell = cell
+        self._nearest[key] = best_cell
         return best_cell
 
     def coords_of(self, cell: str) -> tuple[float, float] | None:
@@ -95,6 +113,9 @@ class CellIndex:
     def nearest_level(self, lat: float, lon: float) -> int | None:
         """Heat level of the heatmap cell covering a point, or None if the
         app showed no map at all."""
+        key = (round(lat, 5), round(lon, 5))
+        if key in self._nearest_level:
+            return self._nearest_level[key]
         best_level: int | None = None
         best_km = float("inf")
         for cell, level in self.levels.items():
@@ -103,6 +124,7 @@ class CellIndex:
             if km < best_km:
                 best_km = km
                 best_level = level
+        self._nearest_level[key] = best_level
         return best_level
 
     def known_cells(self) -> list[str]:

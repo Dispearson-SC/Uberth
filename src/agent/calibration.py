@@ -1,8 +1,8 @@
 """Calibration: every number the policies argue with, in one place.
 
 These are CALIBRATION CONSTANTS, not discovered truths. They encode a courier's
-working assumptions about a scooter in Monterrey, and a judge is entitled to
-disagree with any of them. They are grouped and named so that disagreement is
+working assumptions about a scooter in a dense metro, and a judge is entitled
+to disagree with any of them. They are grouped and named so that disagreement is
 a one-line edit rather than an archaeology exercise.
 
 Kilometres and minutes never collapse into one "cost" number here either: the
@@ -89,16 +89,35 @@ BASELINE_CALIBRATION: dict[str, float] = {
 # Turning straight-line geometry into street travel
 # --------------------------------------------------------------------------
 
+# Kilometres and free-flow minutes for a leg are no longer derived here.
+# They are PULLED from `RawSourcePort.travel_estimate`, which answers from
+# two layers and nothing else: a free-flow skeleton over the OSM drive
+# graph, built once offline per city, plus a correction by zone and hour
+# fitted from the agent's own completed trips. The agent still owns what it
+# does with that answer — the live congestion reading and the rain
+# slowdown below are applied on top of it, here.
+#
+# What used to live here was a single effective 22 km/h over great-circle
+# km times 1.35. That number was a reasonable guess about a city; the
+# skeleton is the city's actual geometry, and the correction is the
+# courier's own measurement of their own vehicle on it.
 TRAVEL_CALIBRATION: dict[str, float] = {
-    # Streets are not straight lines. Multiplier from great-circle km to
-    # ridden km; ~1.35 is the usual figure for a dense grid city.
-    "street_detour_factor": 1.35,
-    # Scooter average including stops, lights and parking hunts.
-    "free_flow_speed_kmh": 22.0,
     # A leg that exists at all costs at least this long (start, park, unlock).
     "min_leg_minutes": 1.0,
     # Below this, two points are treated as the same place.
     "same_place_km": 0.05,
+    # The shared confidence scale for a travel-time answer, and the only
+    # coupling between the agent and its sources beyond the port's types.
+    # A port reporting `structural_only_confidence` is saying "this is the
+    # skeleton and a prior, nothing measured"; one reporting
+    # `fully_learned_confidence` is saying "my own trips have this zone and
+    # hour covered". The agent reads its own live congestion multiplier at
+    # full weight at the first and drops it entirely at the second —
+    # because a well-evidenced learned correction has already absorbed the
+    # typical congestion, and multiplying by it again counts the same jam
+    # twice.
+    "structural_only_confidence": 0.55,
+    "fully_learned_confidence": 0.92,
     # Rain slows traffic and makes the courier ride slower. Multiplier added
     # per mm of believed precipitation, capped.
     "rain_slowdown_per_mm": 0.08,
@@ -137,8 +156,8 @@ ECONOMICS_CALIBRATION: dict[str, float] = {
 # --------------------------------------------------------------------------
 
 # Believed demand per quantised in-app heatmap level (1 calm .. 4 hot). Now
-# that `Observation.cell_coords` places every cell in
-# `Observation.demand_by_cell`, the courier's own per-cell sense is the
+# that `BeliefState.cell_coords` places every cell in
+# `BeliefState.demand_by_cell`, the courier's own per-cell sense is the
 # better signal and is tried first — this is the fallback for a point no
 # demand belief covers (the app's heatmap reaches slightly further out than
 # the operating grid). Lagged, coarse and quantised though it is, reading a
@@ -349,8 +368,14 @@ SAFETY_CALIBRATION: dict[str, float] = {
     # calibration choice, it is an off-by-1440.
     #
     # 05:00 for "still fully dark" and 07:00 for "fully light" bracket
-    # sunrise in Monterrey across the year (about 06:55 in July, 07:15 in
-    # December). CALIBRATION VALUES, like everything else here.
+    # sunrise across the year at about 25 degrees north (roughly 06:55 in
+    # July, 07:15 in December). CALIBRATION VALUES, like everything else
+    # here — and the two in this file that are genuinely a function of WHERE
+    # rather than of people. Said out loud because it is the honest caveat:
+    # at a far northern latitude these two control points are the thing to
+    # re-derive, and re-deriving them needs a coordinate and a date, which
+    # is arithmetic rather than a dataset. That keeps the agent portable in
+    # principle; it does not make these numbers right in Oslo.
     "night_ends_minute": 5 * 60,
     "day_full_minute": 7 * 60,
     # Rain is both slower and more dangerous.
@@ -394,4 +419,77 @@ REPOSITION_CALIBRATION: dict[str, float] = {
     # one band of the app's own quantised heatmap — not merely to have
     # rounded up this minute.
     "min_demand_edge": 0.20,
+}
+
+# --------------------------------------------------------------------------
+# What the agent asks its sources for, and how far
+# --------------------------------------------------------------------------
+#
+# A radius, not a cell list: the agent names places by coordinate because
+# that is all it has in a city it has never worked. Both radii are wide
+# enough to span a metro area from anywhere inside it, which is the whole
+# of what one shift touches.
+#
+# A wide radius does not mean a wide answer. Congestion comes back as
+# sparse as the courier's traffic app actually is — own cell, neighbours,
+# one corridor — because the SOURCE is sparse, not because the question
+# was narrow. POI density does come back everywhere in range, and should:
+# it is a map, and a courier can look at any part of a map.
+QUERY_CALIBRATION: dict[str, float] = {
+    "congestion_radius_km": 30.0,
+    "poi_radius_km": 30.0,
+}
+
+# The app's own label for a surge window, as it appears on screen. A string
+# the agent reads off a disruption feed, never a type imported from the
+# world — there is no import path from here to one.
+SURGE_EVENT_KIND = "surge_window"
+
+# --------------------------------------------------------------------------
+# The hour-of-day rhythm the agent arrives with
+# --------------------------------------------------------------------------
+#
+# Bimodal, because people eat lunch and then dinner. THE SHAPE transfers —
+# it is a fact about people, not about any one city — and the exact peaks
+# and the depth of the afternoon trough are what the agent learns for itself.
+#
+# Deliberately coarse and round-numbered: twelve control points a courier
+# could describe out loud, linearly interpolated. It is not the simulator's
+# own demand profile and is not meant to be; a prior that matched the
+# world's curve exactly would be local knowledge wearing a prior's clothes.
+# Minute-of-day, wrapping at midnight.
+MEAL_RHYTHM_PRIOR: tuple[tuple[int, float], ...] = (
+    (0, 0.05),     # 00:00 dead
+    (360, 0.05),   # 06:00 still dead
+    (480, 0.10),   # 08:00 breakfast, thin
+    (600, 0.25),   # 10:00 climbing
+    (720, 0.70),   # 12:00 lunch ramp
+    (840, 1.00),   # 14:00 lunch peak
+    (960, 0.70),   # 16:00 falling away
+    (1080, 0.35),  # 18:00 the afternoon trough
+    (1200, 0.70),  # 20:00 dinner ramp
+    (1290, 1.00),  # 21:30 dinner peak
+    (1380, 0.70),  # 23:00 winding down
+    (1440, 0.05),  # 24:00 dead again (wraps to 0)
+)
+
+# --------------------------------------------------------------------------
+# Turning POI density plus that rhythm into a demand belief
+# --------------------------------------------------------------------------
+
+DEMAND_PRIOR_CALIBRATION: dict[str, float] = {
+    # Bands, not a continuous number. A courier thinks "busy / quiet /
+    # dead", and a difference finer than a band is noise — which is what
+    # stops the repositioning branch chasing whichever cell rounded up.
+    "bands": 5.0,
+    # How much the agent trusts its own hour-of-day prior. The POI count is
+    # close to a fact; that this hour is busy is a guess, and the product of
+    # a fact and a guess is a guess.
+    "rhythm_prior_confidence": 0.80,
+    # A perceived surge window is real, specific, located information about
+    # right now, so it lifts the cells it touches above the generic rhythm
+    # baseline and raises confidence there.
+    "surge_value_bump": 0.35,
+    "surge_confidence_bump": 0.25,
+    "surge_age_minutes": 2.0,
 }

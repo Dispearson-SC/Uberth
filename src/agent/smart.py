@@ -32,10 +32,19 @@ question is never "which of these is best" — it is:
     queueing ahead is higher while a long job still has far to run, and falls
     toward the idle bar as it ends.
 
-Everything it knows arrives through `PlatformView`, `Observation` and
-`CourierSnapshot`, plus its own memory of what it agreed to and where it has
-been. There is no import path from here to the world, which is why the trace
-it returns can be trusted.
+Everything it knows it went and ASKED FOR. It holds a `RawSourcePort` and
+queries what it decides it needs — weather by coordinate, congestion within
+reach, food-commerce density, disruptions it could plausibly have heard
+about, its own memory of kitchens and trips — and assembles its own
+`BeliefState` out of the answers. The rest is the screen (`PlatformView`) and
+self-knowledge (`CourierSnapshot`), plus its own record of what it agreed to
+and where it has been.
+
+Nothing is pushed at it, and that is the point rather than a preference. An
+agent handed a finished belief is an agent whose perception was chosen by
+whoever built the simulator, and it cannot be dropped in a city where no
+such simulator exists. There is also no import path from here to the world,
+which is why the trace it returns can be trusted.
 """
 
 from __future__ import annotations
@@ -48,13 +57,14 @@ from src.core.ports import (
     CourierSnapshot,
     Decision,
     DecisionTrace,
-    Observation,
     OfferCard,
     OfferEvaluation,
     PlatformView,
+    RawSourcePort,
     ScoreFactor,
 )
 
+from src.agent.beliefs import BeliefState
 from src.agent.calibration import (
     ACCEPTANCE_CALIBRATION,
     BELIEF_CALIBRATION,
@@ -242,27 +252,31 @@ class SmartPolicy:
     # ------------------------------------------------------------------
 
     def decide(
-        self, view: PlatformView, observation: Observation, courier: CourierSnapshot
+        self, view: PlatformView, sources: RawSourcePort, courier: CourierSnapshot
     ) -> Decision:
+        # Ask, then reason. Every belief this decision rests on is assembled
+        # here, from queries this policy chose to make — see
+        # `BeliefState.pull`.
+        beliefs = BeliefState.pull(sources, view, courier)
         memory = self._memory
-        self._begin_minute(view, observation, courier)
+        self._begin_minute(view, beliefs, courier)
 
         # The courier's spatial vocabulary this minute: the app's own coarse
-        # heatmap cells plus `Observation.cell_coords`, which places every
+        # heatmap cells plus `BeliefState.cell_coords`, which places every
         # cell the courier's tools have an opinion about. Both belief maps
         # become usable at minute one rather than being learned a cell at a
         # time — see `CellIndex.from_heatmap`.
-        index = CellIndex.from_heatmap(view.heatmap, observation.at_cell, observation.cell_coords)
-        model = ForwardModel(observation, index)
+        index = CellIndex.from_heatmap(view.heatmap, beliefs.at_cell, beliefs.cell_coords)
+        model = ForwardModel(beliefs, index)
 
         # Where the courier will actually BE when this job starts, and how
         # many committed minutes stand between now and then. Both are zero /
         # "here" when the courier is free; both matter when they are not.
-        start_lat, start_lon, committed_minutes = self._projected_start(courier, observation)
+        start_lat, start_lon, committed_minutes = self._projected_start(courier, beliefs)
         committing_early = bool(courier.carrying_order_ids)
 
         plans = [
-            self._plan(offer, view, observation, courier, model, index, start_lat, start_lon)
+            self._plan(offer, view, beliefs, courier, model, index, start_lat, start_lon)
             for offer in view.offers
         ]
         for plan in plans:
@@ -276,7 +290,7 @@ class SmartPolicy:
                 window=int(RESERVATION_CALIBRATION["recent_offer_window"]),
             )
 
-        threshold = self._threshold(observation, courier, committed_minutes)
+        threshold = self._threshold(beliefs, courier, committed_minutes)
 
         feasible = [plan for plan in plans if plan.blocked is None]
         best = max(feasible, key=lambda plan: plan.rate) if feasible else None
@@ -294,7 +308,7 @@ class SmartPolicy:
 
         # 1. Fuel is time, and running dry mid-delivery costs far more time than
         #    planning the stop does.
-        refuel = self._refuel_decision(plans, observation, courier, threshold, best, view.minute)
+        refuel = self._refuel_decision(plans, beliefs, courier, threshold, best, view.minute)
         if refuel is not None:
             return refuel
 
@@ -311,7 +325,7 @@ class SmartPolicy:
 
         # 4. Nothing worth taking. Moving towards believed demand may beat idling.
         reposition = self._reposition_decision(
-            plans, observation, courier, model, index, threshold, view.minute
+            plans, beliefs, courier, model, index, threshold, view.minute
         )
         if reposition is not None:
             return reposition
@@ -324,7 +338,7 @@ class SmartPolicy:
     # ------------------------------------------------------------------
 
     def _begin_minute(
-        self, view: PlatformView, observation: Observation, courier: CourierSnapshot
+        self, view: PlatformView, beliefs: BeliefState, courier: CourierSnapshot
     ) -> None:
         """Housekeeping the courier does for free: notice a new shift has
         started, drop the record of any job they are no longer holding, and
@@ -344,7 +358,7 @@ class SmartPolicy:
         # the minute after) is how a shift evaporates. Note it and stop
         # asking. See `_ShiftMemory.unreachable`.
         if memory.pending_target:
-            if observation.at_cell == memory.pending_from_cell:
+            if beliefs.at_cell == memory.pending_from_cell:
                 memory.unreachable.add(memory.pending_target)
             memory.pending_target = ""
             memory.pending_from_cell = ""
@@ -352,8 +366,8 @@ class SmartPolicy:
         # An empty screen is evidence about the spot the courier is standing
         # in. Standing somewhere else makes it evidence about somewhere
         # else, so the count starts again — see `_ShiftMemory`.
-        if observation.at_cell != memory.idle_streak_cell:
-            memory.idle_streak_cell = observation.at_cell
+        if beliefs.at_cell != memory.idle_streak_cell:
+            memory.idle_streak_cell = beliefs.at_cell
             memory.idle_streak_minutes = 0.0
 
         if view.offers or courier.carrying_order_ids:
@@ -362,7 +376,7 @@ class SmartPolicy:
             memory.idle_streak_minutes += 1.0
 
     def _projected_start(
-        self, courier: CourierSnapshot, observation: Observation
+        self, courier: CourierSnapshot, beliefs: BeliefState
     ) -> tuple[float, float, float]:
         """(lat, lon, committed_minutes) for the moment a NEW job would start.
 
@@ -374,7 +388,7 @@ class SmartPolicy:
         if not courier.carrying_order_ids or not memory.held:
             return courier.lat, courier.lon, 0.0
         last = memory.held[-1]
-        committed = max(0.0, last.finish_estimate_min - float(observation.minute))
+        committed = max(0.0, last.finish_estimate_min - float(beliefs.minute))
         return last.dropoff_lat, last.dropoff_lon, committed
 
     def _measured_wait_minutes(self, courier: CourierSnapshot) -> float | None:
@@ -452,7 +466,7 @@ class SmartPolicy:
         self,
         offer: OfferCard,
         view: PlatformView,
-        observation: Observation,
+        beliefs: BeliefState,
         courier: CourierSnapshot,
         model: ForwardModel,
         index: CellIndex,
@@ -501,15 +515,30 @@ class SmartPolicy:
             )
         )
 
-        to_customer = model.travel(
+        own_estimate = model.travel(
             offer.pickup_lat, offer.pickup_lon, offer.dropoff_lat, offer.dropoff_lon
         )
+        # Second opinion, and the only one the agent gets for free: the app's
+        # own ETA, corrected by how much it has lied in this zone before.
+        # A no-op until the agent has driven trips there and re-fitted, which
+        # on a first shift in a new city it has not.
+        to_customer = model.reconcile_with_app_eta(own_estimate, dropoff_cell, offer.eta_minutes)
+        reconciled = abs(to_customer.minutes - own_estimate.minutes) >= 0.05
         factors.append(
             ScoreFactor(
                 label="Ride to the customer",
                 delta_minutes=to_customer.minutes,
-                note="%.1f km at a believed traffic factor of %.2f; the app said %.0f min"
-                % (to_customer.km, to_customer.traffic_multiplier, offer.eta_minutes),
+                note="%.1f km at a believed traffic factor of %.2f; the app said %.0f min%s"
+                % (
+                    to_customer.km,
+                    to_customer.traffic_multiplier,
+                    offer.eta_minutes,
+                    ""
+                    if not reconciled
+                    else ", and my own %.0f min is blended with that ETA corrected for how "
+                    "much the app has under-promised in %s"
+                    % (own_estimate.minutes, dropoff_cell),
+                ),
             )
         )
 
@@ -577,7 +606,7 @@ class SmartPolicy:
                 ScoreFactor(
                     label="Wet road risk premium",
                     delta_mxn=-rain_cost,
-                    note="%.1f mm of believed rain" % observation.precip_mm.value,
+                    note="%.1f mm of believed rain" % beliefs.precip_mm.value,
                 )
             )
 
@@ -602,7 +631,7 @@ class SmartPolicy:
         home_from_here = model.travel(
             start_lat, start_lon, courier.home_lat, courier.home_lon
         )
-        urgency = self._homeward_urgency(observation)
+        urgency = self._homeward_urgency(beliefs)
         homeward_minutes = (home_from_dropoff.minutes - home_from_here.minutes) * urgency
         if urgency > 0.0 and abs(homeward_minutes) >= 0.05:
             factors.append(
@@ -615,7 +644,7 @@ class SmartPolicy:
                         home_from_dropoff.minutes,
                         home_from_here.minutes,
                         urgency,
-                        observation.minutes_left_in_shift,
+                        beliefs.minutes_left_in_shift,
                     ),
                 )
             )
@@ -646,7 +675,7 @@ class SmartPolicy:
             net_mxn=net_mxn,
             paid_minutes=paid_minutes,
             return_minutes=home_from_dropoff.minutes,
-            observation=observation,
+            beliefs=beliefs,
             courier=courier,
         )
 
@@ -682,7 +711,7 @@ class SmartPolicy:
         net_mxn: float,
         paid_minutes: float,
         return_minutes: float,
-        observation: Observation,
+        beliefs: BeliefState,
         courier: CourierSnapshot,
     ) -> tuple[str | None, str | None]:
         """Hard reasons an offer cannot be taken, checked before any ranking."""
@@ -696,7 +725,7 @@ class SmartPolicy:
                 % (fuel_needed, courier.fuel_minutes_remaining)
             )
 
-        left = float(observation.minutes_left_in_shift)
+        left = float(beliefs.minutes_left_in_shift)
         if paid_minutes > left:
             return _BLOCK_SHIFT, (
                 "takes about %.0f min and only %.0f min of shift remain"
@@ -712,10 +741,10 @@ class SmartPolicy:
 
         return None, None
 
-    def _homeward_urgency(self, observation: Observation) -> float:
+    def _homeward_urgency(self, beliefs: BeliefState) -> float:
         """0 while the shift is long, 1 when it is nearly over."""
         return 1.0 - ramp(
-            float(observation.minutes_left_in_shift),
+            float(beliefs.minutes_left_in_shift),
             SHIFT_CALIBRATION["homeward_full_weight_below_minutes"],
             SHIFT_CALIBRATION["homeward_ignored_above_minutes"],
         )
@@ -731,7 +760,7 @@ class SmartPolicy:
         return clamp(sum(w * v for w, v in zip(weights, values)) / total, 0.0, 1.0)
 
     def _threshold(
-        self, observation: Observation, courier: CourierSnapshot, committed_minutes: float = 0.0
+        self, beliefs: BeliefState, courier: CourierSnapshot, committed_minutes: float = 0.0
     ) -> float:
         """The MXN/hour bar an offer must clear: what rejecting is worth.
 
@@ -757,7 +786,7 @@ class SmartPolicy:
         """
         cal = RESERVATION_CALIBRATION
         memory = self._memory
-        cold_start = self._cold_start_threshold(observation, courier)
+        cold_start = self._cold_start_threshold(beliefs, courier)
         if memory.offers_scored < cal["min_offers_for_running_mean"]:
             return cold_start
 
@@ -817,7 +846,7 @@ class SmartPolicy:
         trust = n / (n + cal["optimism_shrinkage_offers"])
         return take_everything_value + (best_value - take_everything_value) * trust
 
-    def _cold_start_threshold(self, observation: Observation, courier: CourierSnapshot) -> float:
+    def _cold_start_threshold(self, beliefs: BeliefState, courier: CourierSnapshot) -> float:
         """The bar before the courier has seen enough offers to compute one.
 
         Kept as the old fixed reservation rate scaled by how much shift is
@@ -825,7 +854,7 @@ class SmartPolicy:
         guess, replaced by evidence within the first few offers.
         """
         shift_progress = ramp(
-            float(observation.minutes_left_in_shift),
+            float(beliefs.minutes_left_in_shift),
             SHIFT_CALIBRATION["homeward_full_weight_below_minutes"],
             SHIFT_CALIBRATION["homeward_ignored_above_minutes"],
         )
@@ -931,7 +960,7 @@ class SmartPolicy:
     def _refuel_decision(
         self,
         plans: list[_Plan],
-        observation: Observation,
+        beliefs: BeliefState,
         courier: CourierSnapshot,
         threshold: float,
         best: _Plan | None,
@@ -942,7 +971,7 @@ class SmartPolicy:
         Refuelling buys no pesos, it spends minutes. So it is worth doing only
         while there is enough shift left to earn those minutes back.
         """
-        shift_left = float(observation.minutes_left_in_shift)
+        shift_left = float(beliefs.minutes_left_in_shift)
         worth_stopping = shift_left >= (
             FUEL_CALIBRATION["stop_minutes"] + FUEL_CALIBRATION["min_useful_shift_minutes"]
         )
@@ -989,7 +1018,7 @@ class SmartPolicy:
     def _reposition_decision(
         self,
         plans: list[_Plan],
-        observation: Observation,
+        beliefs: BeliefState,
         courier: CourierSnapshot,
         model: ForwardModel,
         index: CellIndex,
@@ -1012,7 +1041,7 @@ class SmartPolicy:
         ):
             return None
 
-        here_demand = model.demand(observation.at_cell, observation.at_lat, observation.at_lon)
+        here_demand = model.demand(beliefs.at_cell, beliefs.at_lat, beliefs.at_lon)
         # What standing here is expected to cost. Two sources, and the
         # courier takes the worse: what they BELIEVE about local demand, and
         # what has actually happened to them. A twenty-minute empty screen
@@ -1034,17 +1063,17 @@ class SmartPolicy:
         best_demand = 0.0
 
         # Every cell the courier can both NAME and PLACE: the app's own
-        # heatmap cells plus every cell `Observation.cell_coords` locates.
-        # Iterating `observation.demand_by_cell` against no coordinate
+        # heatmap cells plus every cell `BeliefState.cell_coords` locates.
+        # Iterating `BeliefState.demand_by_cell` against no coordinate
         # source — as an earlier revision did — meant `coords_of` returned
         # None for every fine-grid id and this whole function was dead code
         # that could never move the courier anywhere.
         for cell in index.known_cells():
-            if cell == observation.at_cell:
+            if cell == beliefs.at_cell:
                 continue
             if cell in self._memory.unreachable:
                 continue  # asked for it once, demonstrably never got there
-            if cell not in observation.demand_by_cell:
+            if cell not in beliefs.demand_by_cell:
                 # Only somewhere the courier has an actual opinion about.
                 # The app's own display cells are a several-kilometre smear
                 # whose centroid is not a place: "ride to that district"
@@ -1052,19 +1081,19 @@ class SmartPolicy:
                 # the corner the courier is already standing on — and then
                 # nothing happens, the screen stays empty, and the same
                 # instruction comes out again next minute. Before
-                # `Observation.cell_coords` existed these smears were the
+                # `BeliefState.cell_coords` existed these smears were the
                 # only spatial vocabulary the policy had. They are not any
                 # more.
                 continue
             coords = index.coords_of(cell)
             if coords is None:
                 continue  # the agent has no idea where that cell is
-            leg = model.travel(observation.at_lat, observation.at_lon, coords[0], coords[1])
+            leg = model.travel(beliefs.at_lat, beliefs.at_lon, coords[0], coords[1])
             if leg.km > REPOSITION_CALIBRATION["max_reposition_km"]:
                 continue
             if leg.minutes + FUEL_CALIBRATION["job_margin_minutes"] > courier.fuel_minutes_remaining:
                 continue
-            if leg.minutes * 2.0 > float(observation.minutes_left_in_shift):
+            if leg.minutes * 2.0 > float(beliefs.minutes_left_in_shift):
                 continue
             there = model.demand(cell, coords[0], coords[1])
             # Believed BUSIER, by more than one band of the app's own
@@ -1101,7 +1130,7 @@ class SmartPolicy:
         # Remember what was asked for, so next minute the courier can tell
         # whether they actually got going — see `_begin_minute`.
         self._memory.pending_target = best_cell
-        self._memory.pending_from_cell = observation.at_cell
+        self._memory.pending_from_cell = beliefs.at_cell
 
         summary = (
             "%s, so I am riding %.1f km to %s: I believe demand there is %.2f against %.2f here, "

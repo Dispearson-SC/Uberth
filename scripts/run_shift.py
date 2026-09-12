@@ -1,7 +1,7 @@
 """Run one or more policies through one or more real shifts, end to end.
 
 This is the wiring: the REAL adapters (`src.platform.PlatformAdapter`,
-`src.enrichment.EnrichmentAdapter`) over a fully-populated `Scenario` built
+`src.enrichment.RawSourceAdapter`) over a fully-populated `Scenario` built
 from the real `src.world` producers, driven by `src.engine.run_shift`.
 `src.engine.stubs` is deliberately not imported — the stubs exist so the
 engine can run standalone before the adapters land, not so a demo runs on
@@ -11,10 +11,30 @@ them.
     .venv\\Scripts\\python.exe scripts/run_shift.py --window all --seeds 42,7,13
     .venv\\Scripts\\python.exe scripts/run_shift.py --seeds 42,7,13 --diagnose --probe
     .venv\\Scripts\\python.exe scripts/run_shift.py --start 840 --end 1320 --trace 10
+    .venv\\Scripts\\python.exe scripts/run_shift.py --cold-start 3 --seeds 42,7,13
 
-The first run pays ~120 s to build the travel matrix and caches it under
+THE COLD-START CURVE (`--cold-start N`) is a different question from the
+comparison table above, and the stronger one. Instead of running each policy
+once, it runs the smart policy through N CONSECUTIVE shifts as the same
+courier: a fresh scenario each time (a different day in the same city — new
+orders, new weather, new events) with the agent's `CourierHistory` carried
+across and `refit()` called between shifts. Nothing else survives.
+
+It runs a CONTROL arm alongside, over the identical days in the identical
+order, with the history thrown away between shifts. That arm is necessary
+rather than tidy: each shift is a different day, so a rising line on its own
+cannot be told apart from day three simply being busier. Only the difference
+between the two arms is attributable to what the agent learned.
+
+Shift one should be visibly worse than shift three, and if it is not that is
+a finding rather than a success: it would mean something city-specific leaked
+into the agent's priors, because an agent that starts out already calibrated
+never learned anything. See `Docs/architecture/AGENT_MODEL.md` section 6.
+
+The first run pays ~120 s to build the engine's travel matrix and another
+~120 s to bootstrap the agent's own OSM travel skeleton, both cached under
 `cache/` (gitignored); later runs start in about a second, and
-`--no-oracle-cache` forces a rebuild.
+`--no-oracle-cache` forces a rebuild of the engine's.
 
 TWO WIRING FACTS THAT COST REAL HOURS, STATED UP FRONT:
 
@@ -62,7 +82,13 @@ import numpy as np  # noqa: E402
 from src.agent import AcceptAllPolicy, FixedPayoutThresholdPolicy, SmartPolicy  # noqa: E402
 from src.core.ports import Action, Policy, ShiftResult  # noqa: E402
 from src.engine import NetworkTravelOracle, run_shift, self_check  # noqa: E402
-from src.enrichment import EnrichmentAdapter  # noqa: E402
+from src.enrichment import (  # noqa: E402
+    CourierHistory,
+    RawSourceAdapter,
+    TravelSkeleton,
+    build_travel_skeleton,
+    poi_coordinates,
+)
 from src.eval.metrics import ShiftMetrics, compute_metrics  # noqa: E402
 from src.eval.runner import SHIFT_WINDOWS, ShiftWindow  # noqa: E402
 from src.platform import PlatformAdapter  # noqa: E402
@@ -129,7 +155,7 @@ class FreeSlotProbePolicy:
 
     name = "probe_free_slot"
 
-    def decide(self, view, observation, courier):
+    def decide(self, view, sources, courier):
         from src.core.ports import Action, Decision, DecisionTrace
 
         if view.offers and courier.activity.value == "idle":
@@ -340,27 +366,58 @@ class RunOutcome:
         return _fuel_stops(self.result)
 
 
+def load_travel_skeleton() -> TravelSkeleton:
+    """The agent's OWN cell-to-cell free-flow matrix, bootstrapped from OSM.
+
+    Pure geometry — no seed, no date, no window enters it — so the whole
+    sweep shares one instance and the disk cache means only the very first
+    run in a checkout pays for building it. It is a DIFFERENT object over
+    DIFFERENT data from the engine's `NetworkTravelOracle`, which carries
+    live congestion and street closures; see `src.enrichment.osm_travel`.
+    """
+    started = time.time()
+    skeleton = build_travel_skeleton(*poi_coordinates())
+    print(
+        "  ... agent travel skeleton ready in %.0f s (%d cells)"
+        % (time.time() - started, len(skeleton.cells())),
+        flush=True,
+    )
+    return skeleton
+
+
 def run_one(
     policy: Policy,
     built: BuiltScenario,
     base_oracle: NetworkTravelOracle,
     window: ShiftWindow,
     graph,
-) -> RunOutcome:
+    skeleton: TravelSkeleton,
+    history: CourierHistory | None = None,
+) -> tuple[RunOutcome, RawSourceAdapter]:
     """One policy, one scenario, one shift.
 
-    A fresh `EnrichmentAdapter` per run is mandatory, not tidiness: kitchen
-    memory is stateful and per-courier, so reusing one across policies would
-    hand the second policy everything the first one learned. The platform,
-    by contrast, is a pure read and is shared.
+    A fresh `RawSourceAdapter` per run is mandatory, not tidiness: the
+    courier's history is stateful and per-courier, so reusing one across
+    policies would hand the second policy everything the first one learned.
+    The platform, by contrast, is a pure read and is shared, and the travel
+    skeleton is pure geometry and is shared too.
+
+    `history` is the one thing a caller may deliberately carry across runs —
+    that is what makes the cold-start curve a curve. Left out, this is a
+    courier who has never worked the city.
+
+    The adapter is returned alongside the outcome so the caller can `refit()`
+    it between shifts.
     """
-    enrichment = EnrichmentAdapter(built.scenario, graph=graph)
+    sources = RawSourceAdapter(
+        built.scenario, graph=graph, history=history, skeleton=skeleton
+    )
     travel = base_oracle.fork(built.scenario.traffic_timeline)
     result = run_shift(
         built.scenario,
         policy,
         built.platform,
-        enrichment,
+        sources,
         travel=travel,
     )
     error: str | None = None
@@ -368,9 +425,224 @@ def run_one(
         self_check(result)
     except AssertionError as exc:
         error = str(exc)
-    return RunOutcome(
+    outcome = RunOutcome(
         metrics=compute_metrics(result), result=result, window=window, self_check_error=error
     )
+    return outcome, sources
+
+
+# ---------------------------------------------------------------------------
+# The cold-start curve
+# ---------------------------------------------------------------------------
+
+# Offset between one courier-run's consecutive shift seeds. Each shift has to
+# be a DIFFERENT day — a new order stream, new weather, new events — or the
+# agent would be re-running the same day and "learning" would just be
+# memorising it. Same city, different day, same courier.
+COLD_START_SEED_STRIDE = 1000
+
+
+@dataclass
+class ColdStartRun:
+    """One courier's N consecutive shifts in a city they arrived in cold."""
+
+    seed: int
+    mxn_per_hour: tuple[float, ...]
+    deliveries: tuple[int, ...]
+    km: tuple[float, ...]
+    fit_reports: tuple[dict[str, int], ...]
+
+
+@dataclass
+class ColdStartReport:
+    """Both arms of the experiment, over the identical sequence of days.
+
+    A curve on its own proves nothing, and this is the trap the first
+    version of this measurement fell into. Each shift is a DIFFERENT day, so
+    a rising line can just mean day three was busier than day one — and
+    measured that way the per-seed lines ranged from 90 -> 88 -> 155 to
+    104 -> 80 -> 48, which is not a learning curve, it is weather.
+
+    So there is a control: the same seeds, the same days, in the same order,
+    with the agent's history THROWN AWAY between shifts. That arm measures
+    day difficulty and nothing else. The difference between the two arms is
+    the only thing attributable to what the agent learned.
+    """
+
+    learning: list[ColdStartRun]
+    control: list[ColdStartRun]
+
+
+def run_cold_start(
+    policy_name: str,
+    seeds: tuple[int, ...],
+    shifts: int,
+    date: Date,
+    window: ShiftWindow,
+    day_of_week: str,
+    base_oracle: NetworkTravelOracle,
+    graph,
+    skeleton: TravelSkeleton,
+) -> ColdStartReport:
+    """Run each seed as one courier working `shifts` consecutive days.
+
+    The ONLY thing carried from one shift to the next is the
+    `CourierHistory`: kitchen memory, the trip log, and the tables fitted
+    off it. A fresh policy object each shift makes that explicit — none of
+    the learning lives in the policy, all of it lives in what the agent
+    measured and re-fitted.
+
+    `refit()` runs BETWEEN shifts, never inside one, which is the whole
+    online/offline split: fitting is expensive and happens on the agent's
+    own time; using a fitted table is a dict lookup inside seven seconds.
+    """
+    factory = POLICY_FACTORIES.get(policy_name, FreeSlotProbePolicy)
+    learning: list[ColdStartRun] = []
+    control: list[ColdStartRun] = []
+    for seed in seeds:
+        for arm, runs in (("learning", learning), ("control", control)):
+            # The learning arm carries one history across every shift. The
+            # control arm gets a brand-new courier each time, over the exact
+            # same days in the same order, so its line IS the day-difficulty
+            # profile and nothing else.
+            history = CourierHistory() if arm == "learning" else None
+            rates: list[float] = []
+            deliveries: list[int] = []
+            km: list[float] = []
+            reports: list[dict[str, int]] = []
+            for shift in range(shifts):
+                shift_seed = seed + shift * COLD_START_SEED_STRIDE
+                built = build_scenario(
+                    shift_seed, date, window.start_min, window.end_min, day_of_week
+                )
+                outcome, sources = run_one(
+                    factory(),
+                    built,
+                    base_oracle,
+                    window,
+                    graph,
+                    skeleton,
+                    history=history if arm == "learning" else CourierHistory(),
+                )
+                rates.append(outcome.metrics.mxn_per_hour)
+                deliveries.append(outcome.metrics.deliveries)
+                km.append(outcome.metrics.km_traveled)
+                print(
+                    "  seed %d %-8s shift %d (scenario seed %d): %.1f MXN/h, "
+                    "%d deliveries, %.0f km"
+                    % (
+                        seed,
+                        arm,
+                        shift + 1,
+                        shift_seed,
+                        outcome.metrics.mxn_per_hour,
+                        outcome.metrics.deliveries,
+                        outcome.metrics.km_traveled,
+                    ),
+                    flush=True,
+                )
+                # Between shifts, never inside one. Harmless on the control
+                # arm, whose history is discarded either way.
+                reports.append(sources.refit())
+            runs.append(
+                ColdStartRun(
+                    seed=seed,
+                    mxn_per_hour=tuple(rates),
+                    deliveries=tuple(deliveries),
+                    km=tuple(km),
+                    fit_reports=tuple(reports),
+                )
+            )
+    return ColdStartReport(learning=learning, control=control)
+
+
+def _arm_means(runs: list[ColdStartRun], shifts: int) -> list[float]:
+    return [
+        _mean([run.mxn_per_hour[i] for run in runs if i < len(run.mxn_per_hour)])
+        for i in range(shifts)
+    ]
+
+
+def _arm_block(label: str, runs: list[ColdStartRun], shifts: int, width: int) -> list[str]:
+    lines = [label]
+    for run in runs:
+        lines.append(
+            "  ".join(
+                ["%-10s" % ("seed %d" % run.seed)]
+                + ["%9.1f" % rate for rate in run.mxn_per_hour]
+            )
+        )
+    lines.append("-" * width)
+    lines.append(
+        "  ".join(["%-10s" % "MEAN"] + ["%9.1f" % v for v in _arm_means(runs, shifts)])
+    )
+    return lines
+
+
+def render_cold_start(report: ColdStartReport, shifts: int) -> str:
+    """Both arms, then the difference, which is the only honest number here.
+
+    Reported per seed as well as on the mean because one seed climbing is a
+    lucky draw. And reported against a control because each shift is a
+    different day: without it a rising line cannot be told apart from a
+    busier Friday.
+    """
+    header = "  ".join(
+        ["%-10s" % "seed"] + ["%9s" % ("shift %d" % (i + 1)) for i in range(shifts)]
+    )
+    width = len(header)
+    lines: list[str] = [header, "-" * width]
+    lines += _arm_block(
+        "MXN/h, history PERSISTING between shifts (refit between each):",
+        report.learning,
+        shifts,
+        width,
+    )
+    lines.append("")
+    lines += _arm_block(
+        "MXN/h, CONTROL: same days, same order, history thrown away each shift:",
+        report.control,
+        shifts,
+        width,
+    )
+
+    learned = _arm_means(report.learning, shifts)
+    controlled = _arm_means(report.control, shifts)
+    lines.append("")
+    lines.append("Learning minus control, per shift (the part attributable to memory):")
+    lines.append(
+        "  ".join(
+            ["%-10s" % "DELTA"]
+            + ["%+9.1f" % (learned[i] - controlled[i]) for i in range(shifts)]
+        )
+    )
+    if shifts >= 2:
+        first = learned[0] - controlled[0]
+        last = learned[-1] - controlled[-1]
+        lines.append("")
+        lines.append(
+            "shift 1 %+.1f MXN/h -> shift %d %+.1f MXN/h against the same day run cold"
+            % (first, shifts, last)
+        )
+        ahead = sum(
+            1
+            for learn, ctrl in zip(report.learning, report.control)
+            if learn.mxn_per_hour[-1] > ctrl.mxn_per_hour[-1]
+        )
+        lines.append(
+            "  seeds where the experienced courier beat the cold one on the last day: "
+            "%d of %d" % (ahead, len(report.learning))
+        )
+
+    lines.append("")
+    lines.append("What the agent had evidence for, after each shift (learning arm):")
+    for run in report.learning:
+        for i, fit in enumerate(run.fit_reports):
+            lines.append(
+                "  seed %d after shift %d: %s"
+                % (run.seed, i + 1, ", ".join("%s=%d" % kv for kv in sorted(fit.items())))
+            )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +810,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="print the first N decision summaries per policy")
     parser.add_argument("--no-oracle-cache", action="store_true",
                         help="rebuild the travel matrix instead of reusing the pickle cache")
+    parser.add_argument("--cold-start", type=int, default=0, metavar="N",
+                        help="instead of the comparison table, run N consecutive "
+                             "shifts per seed with the agent's history persisting "
+                             "and refit() between them, and print MXN/h per shift")
+    parser.add_argument("--cold-start-policy", default="smart",
+                        help="policy the cold-start curve is measured on")
     args = parser.parse_args(argv)
 
     policy_names = list(args.policies)
@@ -553,6 +831,8 @@ def main(argv: list[str] | None = None) -> int:
     # applied a closure would hand that closure to every fork).
     base_oracle = load_base_oracle(use_cache=not args.no_oracle_cache)
     graph = base_oracle.matrix.graph
+    print("Bootstrapping the agent's own OSM travel skeleton ...", flush=True)
+    skeleton = load_travel_skeleton()
 
     # `build_events_timeline` re-parses the ~120MB drive graph from disk on
     # every call (~20 s). It only ever reads from whatever `_try_load_graph`
@@ -562,6 +842,33 @@ def main(argv: list[str] | None = None) -> int:
     events_mod._try_load_graph = lambda path=events_mod.GRAPH_FIXTURE_PATH: graph
 
     try:
+        if args.cold_start:
+            for window in windows:
+                print()
+                print(
+                    "=== %s (minutes %d-%d) ==="
+                    % (window.label_with_hours, window.start_min, window.end_min)
+                )
+                print(
+                    render_cold_start(
+                        run_cold_start(
+                            args.cold_start_policy,
+                            args.seeds,
+                            args.cold_start,
+                            args.date,
+                            window,
+                            args.day_of_week,
+                            base_oracle,
+                            graph,
+                            skeleton,
+                        ),
+                        args.cold_start,
+                    )
+                )
+            print()
+            print("Total wall time: %.0f s" % (time.time() - started))
+            return 0
+
         all_outcomes: dict[tuple[str, int], list[RunOutcome]] = {}
         for window in windows:
             print()
@@ -584,7 +891,9 @@ def main(argv: list[str] | None = None) -> int:
                 for name in policy_names:
                     factory = POLICY_FACTORIES.get(name, FreeSlotProbePolicy)
                     policy = factory()
-                    outcome = run_one(policy, built, base_oracle, window, graph)
+                    outcome, _sources = run_one(
+                        policy, built, base_oracle, window, graph, skeleton
+                    )
                     all_outcomes.setdefault((window.label, seed), []).append(outcome)
                     rows.append(["seed %d %s" % (seed, name)] + _row_cells(outcome)[1:])
                     if args.diagnose:
