@@ -502,6 +502,14 @@ def build_order_stream(
     lon_col = restaurants["lon"].to_numpy(dtype=float)
     denue_col = restaurants["denue_id"].to_numpy()
     cell_col = restaurants["cell"].to_numpy()
+    # Index labels as a plain array. Reading them via `restaurants.iloc[i].name`
+    # inside the per-order loop cost ~60% of total runtime: every call builds a
+    # fresh Series and re-resolves dtypes across all columns, 27k times per
+    # shift. Positional array access is identical in value and ~200x cheaper.
+    index_col = restaurants.index.to_numpy()
+    # Same reasoning: resolve the prep-time lookup to a positional array once
+    # rather than doing a label lookup per order.
+    prep_mean_col = np.array([model.restaurant_prep_mean[label] for label in index_col], dtype=float)
 
     for t_idx, minute in enumerate(minutes):
         for cell in model.origin_cells:
@@ -543,8 +551,7 @@ def build_order_stream(
                 ref_km = geo.great_circle_km(origin_lat, origin_lon, dest_lat, dest_lon)
                 ref_minutes = ref_km / fare["ref_speed_kmh"] * 60.0
 
-                restaurant_row = restaurants.iloc[g_idx]
-                mean_prep = model.restaurant_prep_mean[restaurant_row.name]
+                mean_prep = prep_mean_col[g_idx]
                 prep_minutes = float(
                     np.clip(
                         kitchen_rng.normal(mean_prep, mean_prep * prep_cal["per_order_cv"]),
