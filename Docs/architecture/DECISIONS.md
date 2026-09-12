@@ -290,6 +290,75 @@ driving, and that does not land if kilometres are a footnote.
 
 ---
 
+## D13 — A closure must lengthen a road, never delete it
+
+**Decided:** every graph-mutating event is verified against strong
+connectivity before it is accepted, and the demo closure is aimed at the
+courier's own corridor rather than a landmark. `src/world/events.py::
+corridor_closure`.
+
+**Why, and this one was found by measurement, not by reading:** the demo
+fork shipped completely inert. `reference_fork.json` was byte-identical to
+`reference_smart.json` — same 737.31 MXN, same 82.189 km, same 13
+deliveries, **zero diverging minutes out of 490**. The fork button showed
+two identical runs.
+
+Two independent defects, and the second is the one worth remembering.
+
+**Aim.** The closure was anchored on whichever cell the courier occupied at
+the single fork minute. Measured: the smart courier spends **203 of 480
+minutes inside one cell** and enters only seven all shift. The fork minute's
+cell held 45 minutes of that — a cell it was passing through.
+
+**Mechanism.** The closure took a 2-hop blob around that cell, which
+swallows the cell-centroid nodes' own access edges. Measured against the
+cached matrix: `close_streets` recomputed 126 of 127 rows, **1,590 pairs
+went NaN**, and all **14,288 still-routable pairs came back changed by
+exactly 0.000 km**.
+
+**The generalisable rule: a disconnection is not a detour.** An unroutable
+pair does not take a longer road. It falls through to
+`NetworkTravelOracle`'s synthetic fallback constants, so the simulator
+silently stops simulating the street network it claims to simulate.
+
+### The correction that was itself wrong
+
+The first fix protected a fixed two hops around every centroid and closed
+the middle of the corridor paths. It produced real detours — +11.0 km and
++8.1 min on the worst pair, 6,870 pairs changed — **and still cut 125 pairs
+off the network**, including one of the courier's own corridor pairs.
+
+**Seven tests passed while it did that.** They ran on a uniform 9×9 lattice,
+where two hops always reaches a redundant through-street. Monterrey is not
+uniform: in the sparse parts of the city a cell's only artery lies further
+out than that. **A uniform fixture cannot falsify a claim about
+non-uniformity** — that is the lesson, and it is not specific to graphs.
+
+So hop-based protection was abandoned as a guarantee. `corridor_closure`
+now removes its candidate edges from a scratch copy of the graph,
+recomputes strong connectivity, widens the protection around any centroid
+that fell out of the largest component, and repeats until none do. Strong
+and not weak connectivity, because a courier has to be able to drive out
+**and** back, and one-way streets make those two different questions.
+
+The test suite gained a deliberately non-uniform fixture — one cell hanging
+off a single long access chain — fronted by a test asserting that two-hop
+protection **does** isolate it. If that test ever stops failing without the
+repair, the fixture has stopped reproducing the bug and everything after it
+is worthless.
+
+### The process defect, which matters more than either bug
+
+`build_replays.py` **already had** a post-fork divergence check. It was a
+`print("WARNING: ...")`. It fired, it scrolled past in the build log, and
+the inert replay set shipped anyway.
+
+It is now `raise SystemExit`. **A demo artifact that cannot support the
+claim it was built to make is not a valid artifact.** Any check that
+validates an artifact's central claim must fail hard, never warn.
+
+---
+
 ## Open items — diagnosed, not hidden
 
 | Item | Status |
@@ -298,3 +367,5 @@ driving, and that does not land if kilometres are a footnote.
 | Night window loses 22% to accept-everything | Cause found: the reservation price uses a lifetime-average arrival rate, so it stays at dinner-peak height through three dead hours after midnight. The obvious fix — a recency window — measured WORSE, because the same rate also inflates every destination's dead-minute estimate. Needs the two uses decoupled. |
 | Day window surge at 25.8%, above the 6-18% band | A flat-profile control run shows 17.8%, so it predates the supply profile and lives in the surge constants. |
 | Smart does not beat a 55-peso payout floor on MXN/h | −2.8% on the reference window, winning 3 of 6 seeds. It does beat accept-everything by +23.1%, 6 of 6. The honest claim is the kilometres, not the pesos. |
+| On the demo seed specifically, the floor out-earns smart outright | Seed 42: 1,158 against 789 MXN in payout+tips. The same seed shows 199.2 km against 82.2, i.e. **9.60 against 5.81 MXN per kilometre driven**. State the return per kilometre; never the gross takings. |
+| Half of a courier's driving is unpaid, and that is not a bug | Measured on seed 42: the 13 delivery records sum to 41.3 km while the courier drove 82.2. The gap is the ride TO the restaurant plus repositioning. The floor's unpaid share is worse, 58% against 50%. The trips panel prints paid and unpaid separately for exactly this reason — two different kilometre figures on one screen read as a contradiction otherwise. |

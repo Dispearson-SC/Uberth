@@ -52,6 +52,7 @@ path was taken is always visible.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from datetime import date as Date
 from datetime import timedelta
 from pathlib import Path
@@ -61,7 +62,7 @@ import numpy as np
 import osmnx as ox
 
 from src.world import geo
-from src.world.network import GRAPH_FIXTURE_PATH
+from src.world.network import GRAPH_FIXTURE_PATH, TravelMatrix
 from src.world.scenario import rng_streams
 from src.world.timeline import Event, EventType
 
@@ -788,3 +789,229 @@ def demo_events(
         ),
     ]
     return sorted(events, key=lambda e: e.start_min)
+
+
+# --------------------------------------------------------------------------
+# Hand-placed corridor closure (demo scripting)
+# --------------------------------------------------------------------------
+
+# Starting protection radius, in hops, around every cell-centroid node.
+# This alone is NOT sufficient and must never be trusted on its own -- see
+# `corridor_closure`'s connectivity repair. Measured: protecting two hops
+# around all 127 centroids still left 125 cell pairs unroutable on the real
+# Monterrey graph, because in the sparse parts of the city a centroid's only
+# viable artery lies further than two hops out. A uniform lattice hides
+# this completely, which is exactly how it got past a passing test suite.
+CORRIDOR_PROTECT_HOPS = 2
+
+# How much to widen an offending centroid's protection each repair round,
+# and how many rounds before giving up. Widening is monotone -- protection
+# only ever grows -- so the loop terminates: at a large enough radius every
+# edge near that centroid is protected and it cannot be cut off.
+CORRIDOR_REPAIR_HOP_STEP = 2
+CORRIDOR_REPAIR_MAX_ROUNDS = 8
+
+# A closure this small is not a road closure, it is a rounding error, and
+# silently building one is how the demo ends up with a fork that changes
+# nothing. Raise instead.
+CORRIDOR_MIN_EDGES = 24
+
+
+def _protected_nodes(
+    undirected: nx.Graph,
+    cell_to_node: Mapping[str, int],
+    cell_order: Sequence[str],
+    radius_by_cell: Mapping[str, int],
+) -> set[int]:
+    """Every node within its cell's protection radius of a cell centroid.
+
+    Takes an already-undirected view, and does a depth-limited BFS rather
+    than `nx.ego_graph`. Not a style preference: `ego_graph(...,
+    undirected=True)` converts the WHOLE graph to undirected on every call,
+    so protecting 127 centroids converted the 95k-node Monterrey graph 127
+    times and the repair loop never finished. Direction is deliberately
+    ignored here -- protection is about which roads are off limits, and a
+    one-way street is just as much a road.
+    """
+    protected: set[int] = set()
+    for cell in cell_order:
+        node = cell_to_node.get(cell)
+        if node is None or not undirected.has_node(node):
+            continue
+        protected.update(
+            nx.single_source_shortest_path_length(undirected, node, cutoff=radius_by_cell[cell])
+        )
+    return protected
+
+
+def _corridor_candidate_edges(
+    matrix: TravelMatrix,
+    pairs: Sequence[tuple[str, str]],
+    protected: set[int],
+) -> set[tuple[int, int]]:
+    cell_index = {cell: i for i, cell in enumerate(matrix.cell_order)}
+    edges: set[tuple[int, int]] = set()
+    for origin, dest in pairs:
+        i, j = cell_index.get(origin), cell_index.get(dest)
+        if i is None or j is None:
+            continue
+        path = matrix._paths.get((i, j))
+        if not path:
+            # Not every pair is cached (measured: 15,878 of 16,129). A
+            # missing path is not an error, just one fewer road to close.
+            continue
+        for u, v in zip(path[:-1], path[1:]):
+            if u not in protected and v not in protected:
+                edges.add((u, v))
+    return edges
+
+
+def _reachable_cells(graph: nx.MultiDiGraph, matrix: TravelMatrix) -> set[str]:
+    """Cells whose centroid node sits in the graph's largest strongly
+    connected component. Strong connectivity is the right test and weak is
+    not: a courier has to be able to drive out AND back, and one-way
+    streets make those two different questions."""
+    largest: set[int] = max(nx.strongly_connected_components(graph), key=len, default=set())
+    return {cell for cell in matrix.cell_order if matrix.cell_to_node.get(cell) in largest}
+
+
+def corridor_closure(
+    event_id: str,
+    start_min: int,
+    duration_min: int,
+    corridor_cells: Sequence[str],
+    matrix: TravelMatrix,
+    *,
+    protect_hops: int = CORRIDOR_PROTECT_HOPS,
+    detect_offset_min: int = 5,
+    detect_radius_km: float = 3.0,
+    confidence: float = 0.9,
+) -> Event:
+    """A STREET_CLOSURE scoped to the roads a courier ACTUALLY drives, and
+    guaranteed not to cut any cell off the road network.
+
+    `corridor_cells` is the courier's own operating corridor, busiest cell
+    first -- derive it from a recorded run (see `corridor_from_occupancy`),
+    never from a landmark. A closure anchored on a fixed downtown cell is a
+    coin flip: on most seeds the courier's route never touches it, the fork
+    comes out identical to the reference run, and the demo beat is a lie.
+
+    What it closes: the node paths linking the busiest cell to every other
+    cell in the corridor, in both directions, minus every edge near a cell
+    centroid. Both directions matter because one-way streets and
+    limited-access ramps mean the road out of a zone is not the road back
+    into it.
+
+    THE LOAD-BEARING GUARANTEE, and the reason this is not just a path
+    slice: closing a road must make a trip LONGER, never impossible. An
+    unroutable pair does not take a detour -- it falls through to
+    `NetworkTravelOracle`'s synthetic fallback constants, so the simulator
+    silently stops simulating the street network it claims to simulate.
+
+    Hop-based protection alone does NOT deliver that guarantee. Measured on
+    the real Monterrey graph, protecting two hops around all 127 centroids
+    still left 125 pairs unroutable, because in the sparse parts of the city
+    a centroid's only artery is further out than that. A uniform synthetic
+    lattice hides the failure entirely. So this function does not assume: it
+    removes the candidate edges from a scratch copy of the graph, recomputes
+    strong connectivity, widens the protection around any centroid that fell
+    out of the largest component, and repeats until none do. Only cells that
+    were reachable to begin with are held to the standard -- the fixture
+    already carries 251 unroutable pairs and this function is not
+    responsible for those.
+
+    `detect_offset_min=5` means the courier learns about it five minutes
+    late: a sudden blockage, not an announced roadwork. That is what makes
+    "it did not see this coming, and it re-planned" an honest sentence.
+
+    Raises ValueError if the corridor is too short, if connectivity cannot be
+    repaired within `CORRIDOR_REPAIR_MAX_ROUNDS` rounds, or if fewer than
+    `CORRIDOR_MIN_EDGES` edges survive -- never a closure too small to bite.
+    """
+    if len(corridor_cells) < 2:
+        raise ValueError(
+            f"corridor_cells needs at least an origin and one partner, got {list(corridor_cells)}"
+        )
+
+    graph: nx.MultiDiGraph = matrix.graph
+    hot, partners = corridor_cells[0], list(corridor_cells[1:])
+    pairs = [(hot, other) for other in partners] + [(other, hot) for other in partners]
+
+    reachable_before = _reachable_cells(graph, matrix)
+    # Built once, reused every repair round. See `_protected_nodes`.
+    undirected = graph.to_undirected(as_view=False, reciprocal=False)
+    radius_by_cell: dict[str, int] = {cell: protect_hops for cell in matrix.cell_order}
+
+    edges: set[tuple[int, int]] = set()
+    for round_number in range(1, CORRIDOR_REPAIR_MAX_ROUNDS + 1):
+        protected = _protected_nodes(undirected, matrix.cell_to_node, matrix.cell_order, radius_by_cell)
+        edges = _corridor_candidate_edges(matrix, pairs, protected)
+        if not edges:
+            break
+
+        # A read-only view, NOT a copy. Copying a 95k-node / 242k-edge
+        # MultiDiGraph once per repair round dominated the whole build;
+        # `restricted_view` hides the edges in O(1) and strong connectivity
+        # reads it exactly the same way.
+        hidden = [
+            (u, v, key) for u, v in edges for key in (graph.get_edge_data(u, v) or {})
+        ]
+        scratch = nx.restricted_view(graph, [], hidden)
+        cut_off = sorted(reachable_before - _reachable_cells(scratch, matrix))
+        if not cut_off:
+            logger.info(
+                "corridor_closure %r: %d edges closed across %d corridor pair(s) after %d "
+                "connectivity round(s); no cell was cut off the network.",
+                event_id, len(edges), len(pairs), round_number,
+            )
+            break
+
+        logger.info(
+            "corridor_closure %r: round %d cut %d cell(s) off the network (%s); widening their "
+            "protection by %d hop(s) and retrying.",
+            event_id, round_number, len(cut_off), ", ".join(cut_off[:5]), CORRIDOR_REPAIR_HOP_STEP,
+        )
+        for cell in cut_off:
+            radius_by_cell[cell] += CORRIDOR_REPAIR_HOP_STEP
+    else:
+        raise ValueError(
+            f"corridor_closure could not place a closure on corridor {list(corridor_cells)} "
+            f"without cutting a cell off the road network, after {CORRIDOR_REPAIR_MAX_ROUNDS} "
+            f"widening rounds. Pick a different corridor rather than shipping a closure that "
+            f"makes trips impossible instead of longer."
+        )
+
+    if len(edges) < CORRIDOR_MIN_EDGES:
+        raise ValueError(
+            f"corridor_closure resolved only {len(edges)} closable edge(s) for corridor "
+            f"{list(corridor_cells)} (minimum {CORRIDOR_MIN_EDGES}). Either the corridor is too "
+            f"short or the connectivity repair has protected all of it; a closure this small "
+            f"would leave the forked run identical to the reference run."
+        )
+
+    return Event(
+        event_id=event_id,
+        type=EventType.STREET_CLOSURE,
+        start_min=start_min,
+        duration_min=duration_min,
+        edges=sorted(edges),
+        close_edges=True,
+        detect_offset_min=detect_offset_min,
+        detect_radius_km=detect_radius_km,
+        confidence=confidence,
+    )
+
+
+def corridor_from_occupancy(
+    cell_minutes: Mapping[str, int], limit: int = 7
+) -> list[str]:
+    """The courier's operating corridor, busiest cell first.
+
+    `cell_minutes` is how many minutes of the shift the courier spent in
+    each cell -- count it off a recorded run's ticks. Measured on the
+    reference seed, the smart courier spent 203 of 480 minutes in a single
+    cell and never entered more than seven, which is why a closure placed
+    anywhere else physically cannot touch it.
+    """
+    ranked = sorted(cell_minutes.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [cell for cell, minutes in ranked[:limit] if minutes > 0]

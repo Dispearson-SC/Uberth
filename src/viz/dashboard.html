@@ -1,0 +1,1124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Courier &mdash; Recorded Shift Replay</title>
+
+<!--
+  Live-demo dashboard. Plays back three pre-recorded JSON shift replays
+  (produced by scripts/build_replays.py) — nothing computes on stage.
+
+  No build step, no bundler, no server: this file opens by double-click.
+  It tries to auto-load the replay JSON files from ../../replays/ next to
+  this file; if the browser blocks that (a plain file:// page cannot fetch
+  local files in Chrome/Edge — this is normal, not a bug), it falls back to
+  a drag-and-drop / click-to-browse file picker for the same three files.
+
+  Map: Leaflet is loaded from a CDN for real street tiles. If the network
+  is down, the loader fails over automatically to a dependency-free canvas
+  plot using the same lat/lon data, so the demo never depends on venue wifi.
+-->
+
+<!-- Leaflet from a CDN. onload/onerror flags let the app degrade cleanly
+     if the venue network is down; see waitForLeaflet() below. -->
+<script>window.__leafletReady = false; window.__leafletFailed = false;</script>
+<link rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css"
+      onerror="window.__leafletFailed = true">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"
+        onload="window.__leafletReady = true"
+        onerror="window.__leafletFailed = true"></script>
+
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b26;
+    --panel-2: #1c2333;
+    --border: #2a3348;
+    --text: #e6ebf5;
+    --text-dim: #93a0b8;
+    --accent-smart: #4da3ff;
+    --accent-fork: #b06bff;
+    --accent-fixed: #ffb454;
+    --good: #3ddc84;
+    --bad: #ff5d6c;
+    --neutral: #93a0b8;
+    --warn: #ffcc4d;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-size: 14px;
+    overflow: hidden;
+  }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    background: var(--panel); flex: 0 0 auto;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 700; }
+  header .subtitle { color: var(--text-dim); font-size: 12px; }
+  header .spacer { flex: 1; }
+  #loadStatus { font-size: 12px; color: var(--text-dim); }
+
+  #main {
+    flex: 1 1 auto; display: flex; min-height: 0;
+  }
+  #mapCol { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+  #mapWrap { flex: 1 1 auto; position: relative; min-height: 0; }
+  #map, #canvasMap { position: absolute; inset: 0; width: 100%; height: 100%; background: #0b1420; }
+  #canvasMap { display: none; }
+
+  #legend {
+    position: absolute; left: 10px; bottom: 10px; z-index: 500;
+    background: rgba(13,17,23,0.88); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 11px; color: var(--text-dim);
+    max-width: 260px;
+  }
+  #legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  #legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+  .courier-tip {
+    background: rgba(13,17,23,0.9) !important; color: var(--text) !important;
+    border: none !important; box-shadow: none !important; font-weight: 700; font-size: 10px;
+    padding: 2px 6px !important;
+  }
+  .courier-tip::before { display: none !important; }
+  #netBadge {
+    position: absolute; right: 10px; top: 10px; z-index: 500;
+    background: rgba(255,204,77,0.15); border: 1px solid var(--warn);
+    color: var(--warn); padding: 4px 8px; border-radius: 6px; font-size: 11px;
+    display: none;
+  }
+
+  #sidebar {
+    flex: 0 0 380px; display: flex; flex-direction: column;
+    border-left: 1px solid var(--border); background: var(--panel);
+    min-height: 0;
+  }
+
+  #counters { flex: 0 0 auto; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .lane-counters { margin-bottom: 10px; }
+  .lane-counters:last-child { margin-bottom: 0; }
+  .lane-title {
+    display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;
+  }
+  .lane-title .swatch { width: 10px; height: 10px; border-radius: 50%; }
+  .counter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+  .counter {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 8px;
+  }
+  .counter .value { font-size: 19px; font-weight: 800; line-height: 1.15; }
+  .counter .value.km { color: var(--warn); }
+  .counter .label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
+  #headline {
+    font-size: 12px; color: var(--text-dim); margin-top: 8px; padding-top: 8px;
+    border-top: 1px dashed var(--border); line-height: 1.4;
+  }
+  #headline b { color: var(--text); }
+
+  #whyPanel {
+    flex: 1 1 0; overflow-y: auto; padding: 12px 14px; min-height: 0;
+  }
+  #whyPanel h2, #tripsPanel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 8px 0; color: var(--text-dim); }
+
+  #tripsPanel {
+    flex: 1 1 0; overflow-y: auto; padding: 12px 14px; min-height: 0;
+    border-top: 1px solid var(--border);
+  }
+  .trip-card { margin-bottom: 14px; }
+  .trip-card:last-child { margin-bottom: 0; }
+  .trip-card .card-title {
+    display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12px;
+    text-transform: uppercase; margin-bottom: 6px;
+  }
+  .trip-card .card-title .swatch { width: 9px; height: 9px; border-radius: 50%; }
+  .trip-list { display: flex; flex-direction: column; gap: 6px; }
+  .trip-row {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 8px; font-size: 11px;
+  }
+  .trip-row-top {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 6px;
+    font-family: "SF Mono", Consolas, monospace; font-weight: 700; margin-bottom: 3px;
+  }
+  .trip-row-top .trip-time { color: var(--text-dim); font-weight: 400; }
+  .trip-row-top .trip-order { flex: 1 1 auto; overflow-wrap: anywhere; margin: 0 6px; }
+  .trip-row-top .trip-rate { color: var(--good); }
+  .trip-row-detail {
+    display: flex; flex-wrap: wrap; gap: 8px; color: var(--text-dim); font-size: 10.5px;
+  }
+  .trip-row-detail .trip-km { color: var(--warn); font-weight: 700; }
+  .trip-row-detail .trip-surge { color: var(--accent-fork); font-weight: 700; }
+  .no-trips { color: var(--text-dim); font-size: 12px; font-style: italic; }
+  .trips-footer {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px;
+    padding-top: 8px; border-top: 1px dashed var(--border);
+  }
+  .trips-footer-item { text-align: center; }
+  .trips-footer-item .value { font-size: 14px; font-weight: 800; line-height: 1.2; }
+  .trips-footer-item .value.km { color: var(--warn); }
+  .trips-footer-item .label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.02em; }
+  .decision-card {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 12px; overflow-x: hidden;
+  }
+  .decision-card .card-title {
+    display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12px;
+    text-transform: uppercase; margin-bottom: 4px;
+  }
+  .decision-card .card-title .swatch { width: 9px; height: 9px; border-radius: 50%; }
+  .decision-head {
+    font-family: "SF Mono", Consolas, monospace; font-size: 12px; font-weight: 700;
+    margin-bottom: 6px; word-break: break-word;
+  }
+  .decision-head.accept { color: var(--good); }
+  .decision-head.reject { color: var(--bad); }
+  .decision-head.other { color: var(--warn); }
+  .decision-summary {
+    font-style: italic; color: var(--text); font-size: 12.5px; line-height: 1.4;
+    margin-bottom: 8px; border-left: 2px solid var(--border); padding-left: 8px;
+  }
+  .stale-note { font-size: 10.5px; color: var(--text-dim); margin-bottom: 6px; }
+  .offer-block { border-top: 1px solid var(--border); padding-top: 6px; margin-top: 6px; }
+  .offer-block:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+  .offer-head {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 6px;
+    font-family: "SF Mono", Consolas, monospace; font-size: 11.5px; margin-bottom: 3px;
+    overflow-wrap: anywhere;
+  }
+  .offer-head .badge {
+    font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+    text-transform: uppercase;
+  }
+  .badge.accepted { background: rgba(61,220,132,0.18); color: var(--good); }
+  .badge.rejected { background: rgba(255,93,108,0.18); color: var(--bad); }
+  .reject-reason { font-size: 11.5px; color: var(--bad); margin: 2px 0 4px 0; }
+  .factor-row {
+    display: flex; gap: 8px; font-size: 11px; padding: 1px 0; align-items: baseline; min-width: 0;
+  }
+  .factor-row .amt { font-family: "SF Mono", Consolas, monospace; flex: 0 0 74px; text-align: right; font-weight: 700; }
+  .factor-row .amt.mxn.pos { color: var(--good); }
+  .factor-row .amt.mxn.neg { color: var(--bad); }
+  .factor-row .amt.min { color: var(--neutral); }
+  .factor-row .lbl { flex: 0 0 90px; color: var(--text); overflow-wrap: anywhere; }
+  .factor-row .note { flex: 1 1 auto; min-width: 0; color: var(--text-dim); font-style: italic; overflow-wrap: anywhere; }
+  .no-decision { color: var(--text-dim); font-size: 12px; font-style: italic; }
+
+  #transport {
+    flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--panel);
+    padding: 8px 16px 12px 16px;
+  }
+  #scrubRow { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  #scrub { flex: 1 1 auto; accent-color: var(--accent-smart); }
+  #minuteLabel { font-family: "SF Mono", Consolas, monospace; font-size: 12px; color: var(--text-dim); flex: 0 0 auto; min-width: 130px; text-align: right; }
+  #controlsRow { display: flex; align-items: center; gap: 10px; }
+  button, select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent-smart); }
+  #playBtn { min-width: 74px; font-weight: 700; }
+  #forkBtn { margin-left: auto; }
+  #forkBtn.active { background: rgba(176,107,255,0.2); border-color: var(--accent-fork); color: var(--accent-fork); }
+  #eventTicker { font-size: 11px; color: var(--warn); margin-left: 8px; }
+
+  /* ---- Load-data overlay ---- */
+  #loadOverlay {
+    position: fixed; inset: 0; background: rgba(6,8,12,0.92); z-index: 2000;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #loadOverlay.hidden { display: none; }
+  #loadCard {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 28px 32px; width: 520px; max-width: 92vw; text-align: center;
+  }
+  #loadCard h2 { margin: 0 0 6px 0; font-size: 18px; }
+  #loadCard p { color: var(--text-dim); font-size: 12.5px; line-height: 1.5; }
+  #dropZone {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 26px 14px;
+    margin: 16px 0; cursor: pointer; color: var(--text-dim); font-size: 13px;
+  }
+  #dropZone.dragover { border-color: var(--accent-smart); color: var(--text); }
+  #fileStatus { text-align: left; font-family: "SF Mono", Consolas, monospace; font-size: 11.5px; margin-top: 10px; }
+  #fileStatus .row { display: flex; justify-content: space-between; padding: 2px 0; }
+  #fileStatus .ok { color: var(--good); }
+  #fileStatus .missing { color: var(--text-dim); }
+  #loadErr { color: var(--bad); font-size: 12px; margin-top: 8px; min-height: 1em; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <header>
+    <h1>Smart Courier &mdash; Recorded Shift Replay</h1>
+    <span class="subtitle">Monterrey &middot; static recorded playback, zero live computation</span>
+    <span class="spacer"></span>
+    <span id="loadStatus"></span>
+  </header>
+
+  <div id="main">
+    <div id="mapCol">
+      <div id="mapWrap">
+        <div id="map"></div>
+        <canvas id="canvasMap"></canvas>
+        <div id="netBadge">Offline map: showing a coordinate plot (no tiles)</div>
+        <div id="legend"></div>
+      </div>
+    </div>
+
+    <div id="sidebar">
+      <div id="counters"></div>
+      <div id="whyPanel">
+        <h2>Why &mdash; the agent's own reasoning</h2>
+        <div id="decisionCards"></div>
+      </div>
+      <div id="tripsPanel">
+        <h2>Trips &mdash; completed deliveries</h2>
+        <div id="tripCards"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="transport">
+    <div id="scrubRow">
+      <input type="range" id="scrub" min="0" max="1" step="1" value="0">
+      <span id="minuteLabel">--:--</span>
+    </div>
+    <div id="controlsRow">
+      <button id="playBtn">&#9654; Play</button>
+      <select id="speedSelect">
+        <option value="1">1x</option>
+        <option value="5">5x</option>
+        <option value="10" selected>10x</option>
+        <option value="20">20x</option>
+        <option value="50">50x</option>
+      </select>
+      <span id="eventTicker"></span>
+      <button id="forkBtn" title="Swap the Smart courier's world for one with a street closure injected mid-shift">
+        &#9889; Fork: inject street closure
+      </button>
+    </div>
+  </div>
+</div>
+
+<div id="loadOverlay">
+  <div id="loadCard">
+    <h2>Load the recorded replay</h2>
+    <p>
+      Generated by <code>scripts/build_replays.py</code>. This page will try to
+      auto-load them from <code>../../replays/</code> next to this file; if your
+      browser blocks that (normal for a double-clicked local HTML file), drop
+      the three JSON files below instead.
+    </p>
+    <div id="dropZone">
+      Drop <b>reference_smart.json</b>, <b>reference_fixed.json</b> and
+      <b>reference_fork.json</b> here &mdash; or click to browse
+    </div>
+    <input type="file" id="fileInput" accept=".json" multiple style="display:none">
+    <div id="fileStatus"></div>
+    <div id="loadErr"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ==========================================================================
+  // 0. Small geometry / math helpers
+  // ==========================================================================
+
+  function haversineKm(lat1, lon1, lat2, lon2) {
+    const R = 6371.0;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+
+  // Interpolate a point along a polyline at fractional arc-length t in [0,1].
+  function interpolateAlongPolyline(points, t) {
+    if (!points || points.length === 0) return null;
+    if (points.length === 1) return points[0];
+    t = Math.max(0, Math.min(1, t));
+    const cum = [0];
+    for (let i = 1; i < points.length; i++) {
+      cum.push(cum[i - 1] + haversineKm(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1]));
+    }
+    const total = cum[cum.length - 1];
+    if (total === 0) return points[points.length - 1];
+    const target = t * total;
+    for (let i = 1; i < points.length; i++) {
+      if (target <= cum[i]) {
+        const segLen = cum[i] - cum[i - 1];
+        const frac = segLen === 0 ? 0 : (target - cum[i - 1]) / segLen;
+        return [
+          points[i - 1][0] + (points[i][0] - points[i - 1][0]) * frac,
+          points[i - 1][1] + (points[i][1] - points[i - 1][1]) * frac,
+        ];
+      }
+    }
+    return points[points.length - 1];
+  }
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function fmtMinute(absMinute) {
+    const m = ((absMinute % 1440) + 1440) % 1440;
+    const hh = String(Math.floor(m / 60)).padStart(2, "0");
+    const mm = String(Math.floor(m % 60)).padStart(2, "0");
+    return hh + ":" + mm;
+  }
+
+  // ==========================================================================
+  // 1. Replay document indexing
+  //
+  // Each replay JSON (see src/eval/replay.py: build_replay) has exactly one
+  // courier. We precompute, once per document, a per-minute lookup with the
+  // courier's interpolated position (routes are polylines referenced by id;
+  // TickRecord.courier.lat/lon only updates at the start/end of a leg, so the
+  // point *along* the street is derived here from route_progress), its
+  // running counters, the most recent decision as of that minute, and
+  // derived pickup/dropoff markers.
+  // ==========================================================================
+
+  function indexReplay(doc) {
+    const courierId = doc.policy_names[0];
+    const posByMinute = new Map();
+    const markers = []; // {minute, kind: 'pickup'|'dropoff', lat, lon, order_id}
+    const trips = []; // completed deliveries, one entry per DeliveryRecord, in delivered_at_min order
+    let lastDecision = null;
+    let pendingAcceptOrderId = null;
+    let prevActivity = null;
+
+    const minutesSorted = doc.frames.map(f => f.minute).sort((a, b) => a - b);
+
+    for (const frame of doc.frames) {
+      const c = frame.couriers.find(cc => cc.courier_id === courierId);
+      if (!c) continue;
+
+      let lat = c.lat, lon = c.lon;
+      if (c.route_ref) {
+        const pts = doc.routes[c.route_ref];
+        if (pts && pts.length >= 2) {
+          const p = interpolateAlongPolyline(pts, c.route_progress);
+          lat = p[0]; lon = p[1];
+        } else if (pts && pts.length === 1) {
+          lat = pts[0][0]; lon = pts[0][1];
+        }
+      }
+
+      const decision = frame.decisions.find(d => d.courier_id === courierId) || null;
+      if (decision) {
+        lastDecision = decision;
+        if (decision.action === "accept" && decision.order_id) {
+          pendingAcceptOrderId = decision.order_id;
+        }
+      }
+
+      if (c.activity === "waiting_kitchen" && prevActivity !== "waiting_kitchen") {
+        markers.push({ minute: frame.minute, kind: "pickup", lat: c.lat, lon: c.lon, order_id: pendingAcceptOrderId });
+      }
+      if (c.delivered) {
+        markers.push({ minute: frame.minute, kind: "dropoff", lat: c.lat, lon: c.lon, order_id: c.delivered.order_id });
+        // `c.delivered` already IS the DeliveryRecord (order_id, accepted_at_min,
+        // delivered_at_min, payout_mxn, tip_mxn, surge_locked, km, minutes,
+        // kitchen_wait_minutes) -- no reshaping needed, just keep it as-is.
+        trips.push(c.delivered);
+      }
+      prevActivity = c.activity;
+
+      posByMinute.set(frame.minute, {
+        lat, lon,
+        activity: c.activity,
+        earnings_mxn: c.earnings_mxn,
+        km_traveled: c.km_traveled,
+        minutes_idle: c.minutes_idle,
+        deliveries_completed: c.deliveries_completed,
+        delivered: c.delivered,
+        decision: decision,
+        lastDecision: lastDecision,
+      });
+    }
+
+    doc._courierId = courierId;
+    doc._minMinute = minutesSorted[0];
+    doc._maxMinute = minutesSorted[minutesSorted.length - 1];
+    doc._posByMinute = posByMinute;
+    doc._markers = markers;
+    doc._trips = trips.sort((a, b) => a.delivered_at_min - b.delivered_at_min);
+    return doc;
+  }
+
+  // State at an exact integer minute, clamped to the recorded range (frozen
+  // at the last known frame once the courier is done and home).
+  function stateAt(doc, minute) {
+    const m = clamp(Math.round(minute), doc._minMinute, doc._maxMinute);
+    return doc._posByMinute.get(m) || null;
+  }
+
+  // Smoothly interpolated lat/lon between whole recorded minutes, purely a
+  // playback nicety -- all discrete counters/decisions use the floor minute.
+  function renderStateAt(doc, minuteFloat) {
+    const m0 = clamp(Math.floor(minuteFloat), doc._minMinute, doc._maxMinute);
+    const m1 = clamp(m0 + 1, doc._minMinute, doc._maxMinute);
+    const a = doc._posByMinute.get(m0);
+    const b = doc._posByMinute.get(m1) || a;
+    const f = minuteFloat - m0;
+    return {
+      lat: a.lat + (b.lat - a.lat) * f,
+      lon: a.lon + (b.lon - a.lon) * f,
+      discrete: a,
+    };
+  }
+
+  // ==========================================================================
+  // 2. Map backends: Leaflet (real streets) or a dependency-free canvas plot.
+  // ==========================================================================
+
+  function waitForLeaflet(timeoutMs) {
+    return new Promise(resolve => {
+      const start = performance.now();
+      (function poll() {
+        if (window.__leafletReady && typeof window.L !== "undefined") return resolve(true);
+        if (window.__leafletFailed) return resolve(false);
+        if (performance.now() - start > timeoutMs) return resolve(false);
+        setTimeout(poll, 100);
+      })();
+    });
+  }
+
+  function LeafletMapView(container) {
+    const map = L.map(container, { zoomControl: true, attributionControl: true }).setView([25.68, -100.31], 12);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap contributors",
+    }).addTo(map);
+
+    const trails = new Map();   // laneKey -> polyline
+    const couriers = new Map(); // laneKey -> circleMarker
+    const markerLayer = L.layerGroup().addTo(map);
+    const eventLayer = L.layerGroup().addTo(map);
+
+    return {
+      kind: "leaflet",
+      setTrail(laneKey, points, color) {
+        if (!points.length) return;
+        let line = trails.get(laneKey);
+        if (!line) {
+          line = L.polyline(points, { color, weight: 3, opacity: 0.55 }).addTo(map);
+          trails.set(laneKey, line);
+        } else {
+          line.setLatLngs(points);
+          line.setStyle({ color });
+        }
+      },
+      setCourier(laneKey, lat, lon, color, label) {
+        let m = couriers.get(laneKey);
+        if (!m) {
+          m = L.circleMarker([lat, lon], {
+            radius: 8, color: "#0d1117", weight: 2, fillColor: color, fillOpacity: 1,
+          }).addTo(map);
+          // Lane A's tooltip sits above its marker, lane B's below -- the two
+          // couriers start at the same depot, so without this both labels
+          // would stack directly on top of each other and be unreadable.
+          const dir = laneKey === "A" ? "top" : "bottom";
+          const off = laneKey === "A" ? [0, -8] : [0, 8];
+          m.bindTooltip(label, { permanent: true, direction: dir, offset: off, className: "courier-tip" });
+          couriers.set(laneKey, m);
+        } else {
+          m.setLatLng([lat, lon]);
+          m.setStyle({ fillColor: color });
+        }
+      },
+      clearPickupDropoff() { markerLayer.clearLayers(); },
+      addPickupDropoff(lat, lon, kind, label) {
+        const color = kind === "pickup" ? "#3ddc84" : "#4da3ff";
+        const shape = kind === "pickup" ? "triangle" : "square";
+        const html = shape === "triangle"
+          ? `<div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:11px solid ${color};"></div>`
+          : `<div style="width:9px;height:9px;background:${color};border:1px solid #0d1117;"></div>`;
+        const icon = L.divIcon({ html, className: "", iconSize: [12, 12] });
+        L.marker([lat, lon], { icon, title: label }).addTo(markerLayer).bindTooltip(label);
+      },
+      clearEvents() { eventLayer.clearLayers(); },
+      addEvent(lat, lon, kind, label) {
+        if (lat == null || lon == null) return;
+        const icon = L.divIcon({
+          html: `<div style="width:22px;height:22px;border-radius:50%;background:#ffcc4d;` +
+            `border:2px solid #0d1117;box-shadow:0 0 6px rgba(0,0,0,0.6);` +
+            `display:flex;align-items:center;justify-content:center;font-size:13px;">&#9888;</div>`,
+          className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+        });
+        L.marker([lat, lon], { icon, title: label, zIndexOffset: 1000 }).addTo(eventLayer).bindTooltip(label);
+      },
+      fitAll(points) {
+        if (points.length) map.fitBounds(L.latLngBounds(points), { padding: [30, 30] });
+      },
+    };
+  }
+
+  function CanvasMapView(canvas) {
+    const ctx = canvas.getContext("2d");
+    let bounds = null; // {minLat,maxLat,minLon,maxLon}
+    let trails = new Map();
+    let couriers = new Map();
+    let pickupDropoffs = [];
+    let events = [];
+
+    function resize() {
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width; canvas.height = rect.height;
+      redraw();
+    }
+    window.addEventListener("resize", resize);
+
+    function project(lat, lon) {
+      const padding = 30;
+      const w = canvas.width - padding * 2, h = canvas.height - padding * 2;
+      const x = padding + ((lon - bounds.minLon) / (bounds.maxLon - bounds.minLon || 1)) * w;
+      const y = padding + (1 - (lat - bounds.minLat) / (bounds.maxLat - bounds.minLat || 1)) * h;
+      return [x, y];
+    }
+
+    function redraw() {
+      ctx.fillStyle = "#0b1420";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (!bounds) return;
+
+      ctx.font = "10px monospace";
+      ctx.fillStyle = "#3a4560";
+      ctx.fillText("offline coordinate plot (no map tiles)", 10, 16);
+
+      for (const [, t] of trails) {
+        ctx.strokeStyle = t.color; ctx.globalAlpha = 0.55; ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        t.points.forEach((p, i) => {
+          const [x, y] = project(p[0], p[1]);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+
+      for (const m of pickupDropoffs) {
+        const [x, y] = project(m.lat, m.lon);
+        ctx.fillStyle = m.kind === "pickup" ? "#3ddc84" : "#4da3ff";
+        if (m.kind === "pickup") {
+          ctx.beginPath(); ctx.moveTo(x, y - 5); ctx.lineTo(x - 5, y + 4); ctx.lineTo(x + 5, y + 4); ctx.closePath(); ctx.fill();
+        } else {
+          ctx.fillRect(x - 3, y - 3, 6, 6);
+        }
+      }
+
+      for (const e of events) {
+        if (e.lat == null) continue;
+        const [x, y] = project(e.lat, e.lon);
+        ctx.fillStyle = "#ffcc4d";
+        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#0d1117"; ctx.font = "9px monospace"; ctx.fillText("!", x - 2, y + 3);
+      }
+
+      for (const [, c] of couriers) {
+        const [x, y] = project(c.lat, c.lon);
+        ctx.fillStyle = c.color;
+        ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "#0d1117"; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = "#e6ebf5"; ctx.font = "bold 10px monospace";
+        ctx.fillText(c.label, x + 9, y - 8);
+      }
+    }
+
+    return {
+      kind: "canvas",
+      setTrail(laneKey, points, color) { trails.set(laneKey, { points, color }); redraw(); },
+      setCourier(laneKey, lat, lon, color, label) { couriers.set(laneKey, { lat, lon, color, label }); redraw(); },
+      clearPickupDropoff() { pickupDropoffs = []; },
+      addPickupDropoff(lat, lon, kind) { pickupDropoffs.push({ lat, lon, kind }); redraw(); },
+      clearEvents() { events = []; },
+      addEvent(lat, lon, kind, label) { events.push({ lat, lon, kind, label }); redraw(); },
+      fitAll(points) {
+        if (!points.length) return;
+        bounds = points.reduce((b, [lat, lon]) => ({
+          minLat: Math.min(b.minLat, lat), maxLat: Math.max(b.maxLat, lat),
+          minLon: Math.min(b.minLon, lon), maxLon: Math.max(b.maxLon, lon),
+        }), { minLat: 90, maxLat: -90, minLon: 180, maxLon: -180 });
+        resize();
+      },
+      _redraw: redraw,
+    };
+  }
+
+  // ==========================================================================
+  // 3. Loading: auto-fetch with a drag-and-drop / file-picker fallback.
+  // ==========================================================================
+
+  const REPLAY_NAMES = ["reference_smart", "reference_fixed", "reference_fork"];
+  const replays = {}; // name -> parsed document (post-index)
+
+  function fileStatusHTML(have) {
+    return REPLAY_NAMES.map(n => {
+      const ok = !!have[n];
+      return `<div class="row"><span>${n}.json</span><span class="${ok ? "ok" : "missing"}">${ok ? "loaded" : "waiting..."}</span></div>`;
+    }).join("");
+  }
+
+  async function tryAutoFetch() {
+    const results = {};
+    try {
+      await Promise.all(REPLAY_NAMES.map(async name => {
+        const res = await fetch("../../replays/" + name + ".json");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        results[name] = await res.json();
+      }));
+      return results;
+    } catch (e) {
+      return null; // any failure -> fall back to manual loading
+    }
+  }
+
+  function setupManualLoader(onReady) {
+    const overlay = document.getElementById("loadOverlay");
+    const dropZone = document.getElementById("dropZone");
+    const fileInput = document.getElementById("fileInput");
+    const statusEl = document.getElementById("fileStatus");
+    const errEl = document.getElementById("loadErr");
+    const have = {};
+    statusEl.innerHTML = fileStatusHTML(have);
+
+    function matchName(filename) {
+      const lower = filename.toLowerCase();
+      return REPLAY_NAMES.find(n => lower.includes(n.replace("reference_", "")));
+    }
+
+    function handleFiles(fileList) {
+      errEl.textContent = "";
+      Array.from(fileList).forEach(file => {
+        const name = matchName(file.name);
+        if (!name) {
+          errEl.textContent = `Unrecognised file "${file.name}" -- expected a name containing "smart", "fixed" or "fork".`;
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            have[name] = JSON.parse(reader.result);
+            statusEl.innerHTML = fileStatusHTML(have);
+            if (REPLAY_NAMES.every(n => have[n])) {
+              overlay.classList.add("hidden");
+              onReady(have);
+            }
+          } catch (e) {
+            errEl.textContent = `Could not parse ${file.name} as JSON: ${e.message}`;
+          }
+        };
+        reader.readAsText(file);
+      });
+    }
+
+    dropZone.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", e => handleFiles(e.target.files));
+    dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("dragover"); });
+    dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+    dropZone.addEventListener("drop", e => {
+      e.preventDefault(); dropZone.classList.remove("dragover");
+      handleFiles(e.dataTransfer.files);
+    });
+  }
+
+  // ==========================================================================
+  // 4. App state and rendering
+  // ==========================================================================
+
+  const LANE_COLORS = { smart: "#4da3ff", fork: "#b06bff", fixed: "#ffb454" };
+  const LANE_LABELS = { smart: "SMART", fork: "SMART (fork: closure)", fixed: "FIXED THRESHOLD (55 MXN floor)" };
+
+  const app = {
+    laneADataset: "smart", // 'smart' | 'fork'
+    currentMinute: 0,
+    minMinute: 0,
+    maxMinute: 0,
+    playing: false,
+    timer: null,
+    mapView: null,
+  };
+
+  function laneADoc() { return replays[app.laneADataset]; }
+  function laneBDoc() { return replays.fixed; }
+
+  function recomputeRange() {
+    const a = laneADoc(), b = laneBDoc();
+    app.minMinute = Math.min(a._minMinute, b._minMinute);
+    app.maxMinute = Math.max(a._maxMinute, b._maxMinute);
+    const scrub = document.getElementById("scrub");
+    scrub.min = app.minMinute; scrub.max = app.maxMinute;
+    app.currentMinute = clamp(app.currentMinute, app.minMinute, app.maxMinute);
+  }
+
+  function renderCounters() {
+    const el = document.getElementById("counters");
+    const lanes = [
+      { key: "A", doc: laneADoc(), datasetKey: app.laneADataset, color: LANE_COLORS[app.laneADataset], label: LANE_LABELS[app.laneADataset] },
+      { key: "B", doc: laneBDoc(), datasetKey: "fixed", color: LANE_COLORS.fixed, label: LANE_LABELS.fixed },
+    ];
+    let html = "";
+    const vals = {};
+    for (const lane of lanes) {
+      const s = renderStateAt(lane.doc, app.currentMinute).discrete;
+      vals[lane.key] = s;
+      html += `
+        <div class="lane-counters">
+          <div class="lane-title"><span class="swatch" style="background:${lane.color}"></span>${lane.label}</div>
+          <div class="counter-grid">
+            <div class="counter"><div class="value">${s.earnings_mxn.toFixed(0)} <span style="font-size:11px;color:var(--text-dim)">MXN</span></div><div class="label">Earned</div></div>
+            <div class="counter"><div class="value km">${s.km_traveled.toFixed(1)} <span style="font-size:11px;color:var(--text-dim)">km</span></div><div class="label">Driven</div></div>
+            <div class="counter"><div class="value">${s.deliveries_completed}</div><div class="label">Deliveries</div></div>
+            <div class="counter"><div class="value">${Math.round(s.minutes_idle)} <span style="font-size:11px;color:var(--text-dim)">min</span></div><div class="label">Idle</div></div>
+          </div>
+        </div>`;
+    }
+    const a = vals.A, b = vals.B;
+    let headline = "";
+    if (b.km_traveled > 0 && b.earnings_mxn > 0) {
+      const earnRatio = (a.earnings_mxn / b.earnings_mxn) * 100;
+      const kmSaved = (1 - a.km_traveled / b.km_traveled) * 100;
+      headline = `So far, <b>${LANE_LABELS[app.laneADataset]}</b> has earned <b>${earnRatio.toFixed(0)}%</b> of ` +
+        `<b>fixed_threshold</b>'s money on <b>${kmSaved.toFixed(0)}%</b> less driving.`;
+    }
+    html += `<div id="headline">${headline}</div>`;
+    el.innerHTML = html;
+  }
+
+  function factorRowHTML(f) {
+    let amtHtml = "";
+    if (f.delta_mxn !== null && f.delta_mxn !== undefined) {
+      const nearZero = Math.abs(f.delta_mxn) < 0.005;
+      const sign = f.delta_mxn > 0 ? "+" : "";
+      const cls = nearZero ? "min" : (f.delta_mxn >= 0 ? "pos" : "neg");
+      amtHtml = `<span class="amt mxn ${cls}">${nearZero ? "0.00" : sign + f.delta_mxn.toFixed(2)} MXN</span>`;
+    } else if (f.delta_minutes !== null && f.delta_minutes !== undefined) {
+      const sign = f.delta_minutes >= 0 ? "+" : "";
+      amtHtml = `<span class="amt min">${sign}${f.delta_minutes.toFixed(1)} min</span>`;
+    } else {
+      amtHtml = `<span class="amt"></span>`;
+    }
+    return `<div class="factor-row">${amtHtml}<span class="lbl">${f.label}</span><span class="note">${f.note || ""}</span></div>`;
+  }
+
+  function offerBlockHTML(ev, chosenOrderId) {
+    const accepted = ev.order_id === chosenOrderId && chosenOrderId;
+    const badge = accepted
+      ? `<span class="badge accepted">accepted</span>`
+      : `<span class="badge rejected">rejected</span>`;
+    const reason = (!accepted && ev.rejected_because) ? `<div class="reject-reason">${ev.rejected_because}</div>` : "";
+    return `
+      <div class="offer-block">
+        <div class="offer-head">
+          <span>${ev.order_id} &middot; ${ev.expected_net_mxn.toFixed(0)} MXN / ${ev.expected_minutes.toFixed(0)} min = ${ev.expected_mxn_per_hour.toFixed(0)} MXN/h</span>
+          ${badge}
+        </div>
+        ${reason}
+        ${ev.factors.map(factorRowHTML).join("")}
+      </div>`;
+  }
+
+  function decisionCardHTML(lane) {
+    const state = renderStateAt(lane.doc, app.currentMinute).discrete;
+    const d = state.lastDecision;
+    let inner;
+    if (!d) {
+      inner = `<div class="no-decision">No decision recorded yet this shift.</div>`;
+    } else {
+      const trace = d.trace;
+      const actionClass = d.action === "accept" ? "accept" : (d.action === "reject" ? "reject" : "other");
+      const headLine = `${d.action.toUpperCase()}${d.order_id ? " " + d.order_id : ""} | THRESHOLD ${trace.threshold_mxn_per_hour.toFixed(1)} MXN/h | BINDING ${trace.binding_constraint}`;
+      const stale = !state.decision
+        ? `<div class="stale-note">most recent decision &mdash; made at minute ${trace.minute} (${fmtMinute(trace.minute)})</div>` : "";
+      inner = `
+        <div class="decision-head ${actionClass}">${headLine}</div>
+        ${stale}
+        <div class="decision-summary">&ldquo;${trace.summary}&rdquo;</div>
+        ${trace.considered.map(ev => offerBlockHTML(ev, trace.chosen_order_id)).join("")}
+      `;
+    }
+    return `
+      <div class="decision-card">
+        <div class="card-title"><span class="swatch" style="background:${lane.color}"></span>${lane.label}</div>
+        ${inner}
+      </div>`;
+  }
+
+  function renderWhyPanel() {
+    const lanes = [
+      { doc: laneADoc(), color: LANE_COLORS[app.laneADataset], label: LANE_LABELS[app.laneADataset] },
+      { doc: laneBDoc(), color: LANE_COLORS.fixed, label: LANE_LABELS.fixed },
+    ];
+    document.getElementById("decisionCards").innerHTML = lanes.map(decisionCardHTML).join("");
+  }
+
+  // -- Trips panel: one row per completed delivery, gated by delivered_at_min
+  // so a trip is never visible before the courier actually finished it --
+  // the same honesty rule the map already applies to perceived events.
+
+  function tripRowHTML(trip) {
+    const hours = trip.minutes / 60;
+    const rate = hours > 0 ? (trip.payout_mxn + trip.tip_mxn) / hours : 0;
+    const surgeHtml = trip.surge_locked > 1.0
+      ? `<span class="trip-surge">${trip.surge_locked.toFixed(2)}x surge</span>` : "";
+    return `
+      <div class="trip-row">
+        <div class="trip-row-top">
+          <span class="trip-time">${fmtMinute(trip.delivered_at_min)}</span>
+          <span class="trip-order">${trip.order_id}</span>
+          <span class="trip-rate">${rate.toFixed(0)} MXN/h</span>
+        </div>
+        <div class="trip-row-detail">
+          <span>${(trip.payout_mxn + trip.tip_mxn).toFixed(2)} MXN</span>
+          <span class="trip-km">${trip.km.toFixed(2)} km</span>
+          <span>${trip.minutes.toFixed(1)} min</span>
+          <span>${trip.kitchen_wait_minutes.toFixed(1)} min kitchen wait</span>
+          ${surgeHtml}
+        </div>
+      </div>`;
+  }
+
+  function tripsFooterHTML(lane, visibleTrips) {
+    // A DeliveryRecord's `km` is the PAID leg only -- restaurant to
+    // customer. It is not what the courier drove. Measured on
+    // reference_smart: the 13 delivery records sum to 41.253 km while
+    // CourierSnapshot.km_traveled ends at 82.189 km. The missing half is
+    // the ride TO the restaurant plus repositioning, and nobody pays for
+    // any of it.
+    //
+    // So this footer must never print a bare "km" next to the counter
+    // panel's "Driven" figure: two different kilometre numbers on one
+    // screen reads as a contradiction, and the whole product claim is
+    // about kilometres. Splitting it into paid and unpaid turns the gap
+    // into the argument instead -- unpaid distance is the cost the app
+    // never shows, and cutting it is what the agent is actually for.
+    const n = visibleTrips.length;
+    const pesos = visibleTrips.reduce((s, t) => s + t.payout_mxn + t.tip_mxn, 0);
+    const paidKm = visibleTrips.reduce((s, t) => s + t.km, 0);
+    const drivenKm = renderStateAt(lane.doc, app.currentMinute).discrete.km_traveled;
+    const unpaidKm = Math.max(drivenKm - paidKm, 0);
+    const unpaidPct = drivenKm > 0 ? (unpaidKm / drivenKm) * 100 : 0;
+    // Pesos per kilometre DRIVEN, not per kilometre paid. This is the one
+    // figure that states the case in a single number, because it charges
+    // the courier for the distance the platform does not: measured on the
+    // reference seed, 9.60 for smart against 5.81 for the 55-peso floor.
+    // Keep it honest about what it is not -- on this same seed the floor
+    // earns MORE pesos outright (1158 against 789). The agent's claim is
+    // return per kilometre, never gross takings.
+    const perKm = drivenKm > 0 ? pesos / drivenKm : 0;
+    return `
+      <div class="trips-footer">
+        <div class="trips-footer-item"><div class="value">${n}</div><div class="label">Trips</div></div>
+        <div class="trips-footer-item"><div class="value">${pesos.toFixed(0)} MXN</div><div class="label">Payout + tips</div></div>
+        <div class="trips-footer-item"><div class="value km">${paidKm.toFixed(1)} km</div><div class="label">Paid distance</div></div>
+        <div class="trips-footer-item"><div class="value km">${unpaidKm.toFixed(1)} km</div><div class="label">Unpaid (${unpaidPct.toFixed(0)}% of driven)</div></div>
+        <div class="trips-footer-item"><div class="value">${perKm.toFixed(2)}</div><div class="label">MXN per driven km</div></div>
+      </div>`;
+  }
+
+  function tripCardHTML(lane) {
+    // Gate strictly on delivered_at_min <= currentMinute: a trip must never
+    // appear before the courier actually finished it, exactly like a world
+    // event never appears before its perceived_minute.
+    const visible = lane.doc._trips.filter(t => t.delivered_at_min <= app.currentMinute);
+    const newestFirst = visible.slice().reverse();
+    const body = newestFirst.length
+      ? `<div class="trip-list">${newestFirst.map(tripRowHTML).join("")}</div>`
+      : `<div class="no-trips">No deliveries completed yet this shift.</div>`;
+    return `
+      <div class="trip-card">
+        <div class="card-title"><span class="swatch" style="background:${lane.color}"></span>${lane.label}</div>
+        ${body}
+        ${tripsFooterHTML(lane, visible)}
+      </div>`;
+  }
+
+  function renderTripsPanel() {
+    const lanes = [
+      { doc: laneADoc(), color: LANE_COLORS[app.laneADataset], label: LANE_LABELS[app.laneADataset] },
+      { doc: laneBDoc(), color: LANE_COLORS.fixed, label: LANE_LABELS.fixed },
+    ];
+    document.getElementById("tripCards").innerHTML = lanes.map(tripCardHTML).join("");
+  }
+
+  function renderMap() {
+    const mv = app.mapView;
+    const a = laneADoc(), b = laneBDoc();
+    const aState = renderStateAt(a, app.currentMinute);
+    const bState = renderStateAt(b, app.currentMinute);
+
+    const aTrail = [];
+    for (let m = a._minMinute; m <= clamp(Math.floor(app.currentMinute), a._minMinute, a._maxMinute); m++) {
+      const s = a._posByMinute.get(m);
+      if (s) aTrail.push([s.lat, s.lon]);
+    }
+    const bTrail = [];
+    for (let m = b._minMinute; m <= clamp(Math.floor(app.currentMinute), b._minMinute, b._maxMinute); m++) {
+      const s = b._posByMinute.get(m);
+      if (s) bTrail.push([s.lat, s.lon]);
+    }
+
+    mv.setTrail("A", aTrail, LANE_COLORS[app.laneADataset]);
+    mv.setTrail("B", bTrail, LANE_COLORS.fixed);
+    mv.setCourier("A", aState.lat, aState.lon, LANE_COLORS[app.laneADataset], LANE_LABELS[app.laneADataset].split(" ")[0]);
+    mv.setCourier("B", bState.lat, bState.lon, LANE_COLORS.fixed, "FIXED");
+
+    // Pickup / dropoff markers within a trailing visibility window, so the
+    // map does not fill up with every stop from eight hours ago.
+    mv.clearPickupDropoff();
+    const WINDOW_MIN = 90;
+    for (const doc of [a, b]) {
+      for (const m of doc._markers) {
+        if (m.minute <= app.currentMinute && m.minute >= app.currentMinute - WINDOW_MIN) {
+          mv.addPickupDropoff(m.lat, m.lon, m.kind, `${m.kind} ${m.order_id || ""}`);
+        }
+      }
+    }
+
+    // World events, honestly gated: only ever rendered from the minute the
+    // courier could actually perceive them (perceived_minute), never from
+    // ground truth alone.
+    mv.clearEvents();
+    const seen = new Map();
+    for (const doc of [a, b]) {
+      for (const e of doc.world_events) {
+        if (e.perceived_minute !== null && e.perceived_minute <= app.currentMinute) {
+          const prior = seen.get(e.event_id);
+          if (!prior || e.perceived_minute < prior.perceived_minute) seen.set(e.event_id, e);
+        }
+      }
+    }
+    let tickerText = "";
+    for (const [, e] of seen) {
+      mv.addEvent(e.lat, e.lon, e.kind, `${e.kind} (perceived at minute ${e.perceived_minute})`);
+      if (e.perceived_minute === Math.floor(app.currentMinute)) {
+        tickerText = `Just perceived: ${e.kind.replace(/_/g, " ")}`;
+      }
+    }
+    document.getElementById("eventTicker").textContent = tickerText;
+  }
+
+  function renderLegend() {
+    const laneAColor = LANE_COLORS[app.laneADataset];
+    const laneALabel = LANE_LABELS[app.laneADataset].split(" ")[0];
+    document.getElementById("legend").innerHTML = `
+      <div class="row"><span class="dot" style="background:${laneAColor}"></span>${laneALabel} courier</div>
+      <div class="row"><span class="dot" style="background:${LANE_COLORS.fixed}"></span>FIXED courier</div>
+      <div class="row"><span class="dot" style="background:#3ddc84;border-radius:2px;clip-path:polygon(50% 0,0 100%,100% 100%)"></span>Pickup (restaurant)</div>
+      <div class="row"><span class="dot" style="background:#4da3ff;border-radius:2px"></span>Dropoff (customer)</div>
+      <div class="row"><span class="dot" style="background:#ffcc4d"></span>Perceived world event</div>
+    `;
+  }
+
+  function renderAll() {
+    document.getElementById("scrub").value = Math.round(app.currentMinute);
+    document.getElementById("minuteLabel").textContent =
+      fmtMinute(app.currentMinute) + "  (t=" + Math.round(app.currentMinute) + ")";
+    renderLegend();
+    renderCounters();
+    renderWhyPanel();
+    renderTripsPanel();
+    renderMap();
+  }
+
+  // ==========================================================================
+  // 5. Playback controls
+  // ==========================================================================
+
+  function setPlaying(playing) {
+    app.playing = playing;
+    document.getElementById("playBtn").innerHTML = playing ? "&#10074;&#10074; Pause" : "&#9654; Play";
+    if (app.timer) { clearInterval(app.timer); app.timer = null; }
+    if (playing) {
+      const TICK_MS = 100;
+      app.timer = setInterval(() => {
+        const speed = Number(document.getElementById("speedSelect").value); // sim-minutes per real second
+        app.currentMinute += speed * (TICK_MS / 1000);
+        if (app.currentMinute >= app.maxMinute) {
+          app.currentMinute = app.maxMinute;
+          setPlaying(false);
+        }
+        renderAll();
+      }, TICK_MS);
+    }
+  }
+
+  function wireControls() {
+    document.getElementById("playBtn").addEventListener("click", () => setPlaying(!app.playing));
+    document.getElementById("scrub").addEventListener("input", e => {
+      setPlaying(false);
+      app.currentMinute = Number(e.target.value);
+      renderAll();
+    });
+    document.getElementById("forkBtn").addEventListener("click", () => {
+      app.laneADataset = app.laneADataset === "smart" ? "fork" : "smart";
+      document.getElementById("forkBtn").classList.toggle("active", app.laneADataset === "fork");
+      recomputeRange();
+      renderAll();
+    });
+  }
+
+  // ==========================================================================
+  // 6. Boot
+  // ==========================================================================
+
+  async function boot(rawDocs) {
+    for (const name of REPLAY_NAMES) {
+      const key = name.replace("reference_", ""); // smart | fixed | fork
+      replays[key] = indexReplay(rawDocs[name]);
+    }
+
+    document.getElementById("loadStatus").textContent =
+      `Loaded: smart (${replays.smart.frames.length} min), fixed (${replays.fixed.frames.length} min), ` +
+      `fork (${replays.fork.frames.length} min) &middot; seed ${replays.smart.seed}`;
+
+    const useLeaflet = await waitForLeaflet(4000);
+    if (useLeaflet) {
+      document.getElementById("map").style.display = "block";
+      app.mapView = LeafletMapView(document.getElementById("map"));
+    } else {
+      document.getElementById("netBadge").style.display = "block";
+      document.getElementById("canvasMap").style.display = "block";
+      app.mapView = CanvasMapView(document.getElementById("canvasMap"));
+    }
+
+    recomputeRange();
+    app.currentMinute = app.minMinute;
+
+    const allPoints = [];
+    for (const key of ["smart", "fixed", "fork"]) {
+      for (const [, s] of replays[key]._posByMinute) allPoints.push([s.lat, s.lon]);
+    }
+    app.mapView.fitAll(allPoints);
+
+    wireControls();
+    renderAll();
+  }
+
+  async function main() {
+    const auto = await tryAutoFetch();
+    if (auto) {
+      document.getElementById("loadOverlay").classList.add("hidden");
+      boot(auto);
+      return;
+    }
+    setupManualLoader(boot);
+  }
+
+  main();
+})();
+</script>
+</body>
+</html>
