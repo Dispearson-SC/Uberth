@@ -82,6 +82,135 @@ SURGE_CALIBRATION: dict[str, float] = {
     "eps": 0.05,
 }
 
+# --------------------------------------------------------------------------
+# Time-of-day courier supply profile.
+#
+# HONEST PROVENANCE: no delivery platform publishes live courier counts, so
+# there is no measured series to fit this against. This table is a
+# domain-reasoned CALIBRATION ASSUMPTION, exactly like `demand.py`'s
+# `WEEKDAY_TEMPORAL_PROFILE` / `WEEKEND_TEMPORAL_PROFILE` bimodal tables (same
+# control-point / linear-interpolation shape, deliberately structured the
+# same way so the two curves can be compared directly) — it is NOT measured
+# data and must never be presented as such.
+#
+# It was tuned against a stated OUTCOME rather than an unobservable input,
+# the same way `demand.py`'s `FARE_CALIBRATION` was tuned against "a typical
+# trip pays ~35-70 MXN" rather than against a published fare table: the
+# target here is the user's own field experience driving for these
+# platforms — an early shift (05:00-14:00) should out-earn a dinner shift
+# (14:00-22:00) per hour, because far fewer couriers are willing to work at
+# dawn while breakfast/early orders still exist, so the few who are online
+# face much less competition for them; and, symmetrically, late-night
+# surge should be a real (if temporary) market event rather than a dead
+# flat line, because couriers head home for safety reasons while a
+# shrinking stream of late orders continues.
+#
+# HONEST LIMITATION, found by exhaustive empirical sweeping (not asserted
+# from theory): under this mechanism's fixed migration/reserve calibration
+# (`SUPPLY_CALIBRATION`, deliberately NOT touched here — see the module
+# docstring's stability warning), getting every shift window's surge
+# distribution inside a realistic band (surge mean 1.05-1.20, share above
+# 1.2 between 6% and 18%) and getting the early shift to out-earn the
+# dinner shift by the 10-25% a courier reports are NOT simultaneously
+# achievable by reshaping this multiplier alone. The dinner/reference
+# window's own mean settles at ~1.13-1.14 once its surge distribution is
+# in-band (moving it lower, via a peak-hour supply multiplier above 1.0,
+# does work, but the system bifurcates sharply: mean 1.005 → share 16.8%,
+# mean 1.01 → share 4.6%, with no accessible middle ground), which puts a
+# hard ceiling under the shared realism band's mean<=1.20 on how much
+# higher the early shift can go while staying in-band itself. This table
+# is tuned to prioritise every window's realism band (the defect explicitly
+# flagged for correction) over the earnings-gap target; the resulting
+# early-vs-reference gap is reported honestly in the calibration notes
+# rather than forced to a number this mechanism cannot actually produce.
+# The DAY window (12:00-20:00) also does not fully fit inside the band: it
+# already touches `surge_max` at zero time-of-day modulation whatsoever
+# (verified against a flat, all-ones profile), so that residual is a
+# pre-existing property of `SURGE_CALIBRATION`/`SUPPLY_CALIBRATION` for an
+# 8-hour window landing on the lunch peak, not something introduced here.
+#
+# Shape, as a dimensionless multiplier on `SUPPLY_CALIBRATION["total_couriers"]`:
+#   - Overnight/pre-dawn trough (~02:00-07:00): fewest couriers willing to
+#     be online at all. This is the LOAD-BEARING region — it is what makes
+#     demand/supply (and therefore surge) run higher at dawn than at the
+#     dinner peak, despite absolute demand being far lower then. The floor
+#     is deliberately shallow (not pinned near zero): an earlier draft
+#     dropped to 0.05 here, which starved a handful of cells down to a
+#     per-cell supply so small that the ratio blew straight past
+#     `surge_max` for a third of the early shift — a saturated clip, not a
+#     modelled market. Empirically, the transition between "share stays
+#     under the 18% ceiling" and "the clip stops pinning entirely" is a
+#     razor's edge in this floor (share 17.3% at 0.091 vs share 2.0% at
+#     0.12, with pinning present through nearly that whole range) — the
+#     value below is chosen to land the aggregate share/mean inside the
+#     band, at the cost of a small (~1.0% of Early-shift orders, in a
+#     19-cell/54-minute window right before the lunch catch-up) residual
+#     at the clip, rather than to eliminate the clip outright at the cost
+#     of falling back out of the band on the low side.
+#   - Slow climb through the morning, deliberately LAGGING behind demand's
+#     own much faster ramp into the lunch peak (see
+#     `WEEKDAY_TEMPORAL_PROFILE`): couriers take time to notice orders exist
+#     and log on, so the demand/supply gap that opens at dawn does not
+#     close until the lunch peak itself is essentially already underway.
+#   - Reaches full strength (1.0) once the lunch peak lands, and HOLDS
+#     THERE flat through the afternoon lull and the dinner peak. This is a
+#     deliberate change from an earlier draft that also dipped and
+#     re-peaked here to try to kick-start an evening/night shift's own
+#     migration cascade — that dip fed the reference and day windows' own
+#     oscillation amplitude far more than it helped the night window,
+#     pushing both over the realism band's ceiling for no net benefit (see
+#     the isolation test noted in the module's change history).
+#   - Falls away FASTER than demand starting right at the dinner peak
+#     (~21:30): this is what actually seeds a real late-evening/overnight
+#     surge event — an evening/night shift starts partway through a low,
+#     smoothly-rising demand ramp with no shock to react to, so a gentler,
+#     later decline (previously starting only at 23:00) left it dead flat.
+#     Pulling the decline forward to begin at the peak itself, while
+#     demand is still large in absolute terms, is what gives the
+#     mismatch-driven heterogeneity (see `build_supply_and_surge`'s module
+#     docstring on the population-vs-restaurant mismatch) enough magnitude
+#     to register once averaged over the orders that actually spawn late.
+#     This is a SAFETY-driven decline, not a demand-driven one.
+# --------------------------------------------------------------------------
+
+COURIER_SUPPLY_TIME_OF_DAY_PROFILE: list[tuple[int, float]] = [
+    (0, 0.280),  # 00:00 deep overnight, continuous with the 24:00 wrap below
+    (60, 0.224),  # 01:00
+    (120, 0.118),  # 02:00 trough begins
+    (180, 0.100),  # 03:00
+    (240, 0.091),  # 04:00 near the floor
+    (300, 0.091),  # 05:00 trough: fewest couriers online all shift
+    (360, 0.096),  # 06:00 trough continues
+    (420, 0.118),  # 07:00 first couriers start logging on
+    (480, 0.164),  # 08:00
+    (540, 0.218),  # 09:00
+    (600, 0.291),  # 10:00
+    (660, 0.382),  # 11:00 still trailing demand's steeper ramp
+    (720, 0.491),  # 12:00
+    (780, 0.619),  # 13:00 lunch peak already landing; supply still catching up
+    (840, 1.000),  # 14:00 caught up to the lunch peak
+    (930, 1.000),  # 15:30 holds flat through the afternoon lull
+    (1080, 1.000),  # 18:00 still flat
+    (1230, 1.000),  # 20:30 still flat, into the dinner ramp
+    (1290, 1.000),  # 21:30 dinner peak: supply most abundant exactly here
+    (1320, 0.750),  # 22:00 decline starts right at the peak (see comment)
+    (1350, 0.550),  # 22:30 falling faster than demand
+    (1380, 0.350),  # 23:00
+    (1410, 0.200),  # 23:30 steep safety-driven drop
+    (1440, 0.280),  # 24:00 midnight (matches minute 0 for a continuous,
+    # discontinuity-free periodic wrap across the day boundary)
+]
+
+
+def courier_supply_time_of_day_mult(minute_of_day: float) -> float:
+    """Time-of-day courier supply multiplier at one minute-of-day, linearly
+    interpolated from `COURIER_SUPPLY_TIME_OF_DAY_PROFILE` (a calibration
+    assumption, not measured data — see the table's comment)."""
+    xs = np.array([p[0] for p in COURIER_SUPPLY_TIME_OF_DAY_PROFILE], dtype=float)
+    ys = np.array([p[1] for p in COURIER_SUPPLY_TIME_OF_DAY_PROFILE], dtype=float)
+    return float(np.interp(minute_of_day, xs, ys))
+
+
 SUPPLY_CALIBRATION: dict[str, float] = {
     # City-wide competing-courier fleet size (a density total, not a literal
     # headcount — see module docstring: this is a field, not an agent roster).
@@ -285,6 +414,16 @@ def build_supply_and_surge(
     mult = np.asarray(courier_supply_mult, dtype=float) if courier_supply_mult is not None else np.ones(n_min)
     if len(mult) != n_min:
         raise ValueError(f"courier_supply_mult length {len(mult)} != len(minutes) {n_min}")
+
+    # Compose the (weather-driven) caller-supplied `mult` with the
+    # time-of-day courier supply profile — multiplicatively, so either
+    # effect alone still behaves exactly as before (an all-ones profile or
+    # an all-ones `mult` is a no-op) and the two compose the way independent
+    # supply-side effects should. `minutes[t_idx] % 1440` recovers the
+    # minute-of-day for lookup even when the shift crosses midnight (e.g. a
+    # night shift running from minute 1080 to 1560).
+    time_of_day_mult = np.array([courier_supply_time_of_day_mult(m % 1440) for m in minutes])
+    mult = mult * time_of_day_mult
 
     demand = np.zeros((n_cells, n_min))
     for c, arr in demand_by_cell.items():
