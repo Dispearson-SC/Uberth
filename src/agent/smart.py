@@ -15,14 +15,33 @@ and the gap between the two is where the whole edge lives:
   - and rejecting is not free: the platform feeds choosy couriers worse offers,
     so the policy prices its own choosiness.
 
+And it knows the difference between the two questions the app actually asks.
+The app shows a FLOW of offers with seconds to decide, not a menu, so the real
+question is never "which of these is best" — it is:
+
+  - FREE: is this worth more than waiting for the next one? That is an
+    optimal-stopping problem, and its answer is a reservation price computed
+    from how often offers arrive and what they are typically worth, both
+    measured off this courier's own shift. Not a constant: at three offers an
+    hour, fussiness is just unpaid waiting.
+  - BUSY: is this worth COMMITTING to before I know what else is coming? The
+    courier may accept their next job while still finishing this one. Doing so
+    erases the idle gap and starts that kitchen cooking early; it also spends
+    the option on something better, and the ride to that restaurant starts
+    from where the CURRENT job drops them, not from here. So the bar for
+    queueing ahead is higher while a long job still has far to run, and falls
+    toward the idle bar as it ends.
+
 Everything it knows arrives through `PlatformView`, `Observation` and
-`CourierSnapshot`. There is no import path from here to the world, which is why
-the trace it returns can be trusted.
+`CourierSnapshot`, plus its own memory of what it agreed to and where it has
+been. There is no import path from here to the world, which is why the trace
+it returns can be trusted.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 
 from src.core.ports import (
     Action,
@@ -43,11 +62,12 @@ from src.agent.calibration import (
     FUEL_CALIBRATION,
     HANDLING_CALIBRATION,
     REPOSITION_CALIBRATION,
+    RESERVATION_CALIBRATION,
     SAFETY_CALIBRATION,
     SHIFT_CALIBRATION,
 )
 from src.agent.forward_model import ForwardModel, clamp, ramp
-from src.agent.geometry import CellIndex
+from src.agent.geometry import CellIndex, haversine_km
 
 _MINUTES_PER_HOUR = 60.0
 
@@ -64,6 +84,82 @@ _BINDING_OF: dict[str, str] = {
     _BLOCK_HOME: "home",
     _BLOCK_FUEL: "fuel",
 }
+
+
+@dataclass
+class _HeldJob:
+    """A job this policy accepted and has not seen delivered yet.
+
+    The policy keeps its own record because the port tells it only WHICH
+    orders it is holding (`CourierSnapshot.carrying_order_ids`), never how
+    long they have to run or where they end. Both matter:
+
+      - `finish_estimate_min` is how the policy knows how much committed
+        work stands between now and its next free minute, which is what
+        decides whether queueing another job ahead costs it anything.
+      - `dropoff_lat`/`dropoff_lon` are where the courier will BE when they
+        start that queued job. Scoring the ride to its restaurant from the
+        courier's current position instead — which is what a policy without
+        this memory has to do — systematically understates it, because the
+        courier is about to ride several kilometres away from here first.
+
+    This is the courier's own memory of what they agreed to. Nothing here
+    comes from anywhere but decisions this policy made itself.
+    """
+
+    order_id: str
+    finish_estimate_min: float
+    dropoff_lat: float
+    dropoff_lon: float
+
+
+@dataclass
+class _ShiftMemory:
+    """What this courier has learned since clocking on.
+
+    Reset whenever a new shift starts. Everything in it is either something
+    the courier was shown, something they did, or something they stood in
+    the middle of.
+    """
+
+    last_minute: int = -1
+    # Fine-grid cell id -> where the courier was standing when the app said
+    # they were in it. See `CellIndex.from_heatmap`.
+    cell_coordinates: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # (rate, confidence-discounted net MXN, minutes) for every offer this
+    # policy has scored this shift, newest last. This IS the courier's
+    # belief about the value distribution of the offer flow — the empirical
+    # one they have lived through, not an assumed shape.
+    scored: list[tuple[float, float, float]] = field(default_factory=list)
+    # Jobs accepted and not yet known to be finished, oldest first.
+    held: list[_HeldJob] = field(default_factory=list)
+    # Consecutive minutes stood free with nothing on screen. Direct evidence
+    # about THIS spot, and the only evidence about it the courier cannot
+    # argue with: whatever they believed about local demand, an empty screen
+    # for twenty minutes says the flow does not reach here.
+    idle_streak_minutes: float = 0.0
+
+    def reset(self) -> None:
+        self.last_minute = -1
+        self.cell_coordinates = {}
+        self.scored = []
+        self.held = []
+        self.idle_streak_minutes = 0.0
+
+    def record(self, rate: float, net_mxn: float, minutes: float, window: int) -> None:
+        """Remember one scored offer, keeping only the recent `window`.
+
+        Bounded on purpose: the offer flow at 21:00 is not the offer flow at
+        14:00, so a reservation price built from the whole shift would keep
+        arguing with a lunchtime that is over.
+        """
+        self.scored.append((rate, net_mxn, minutes))
+        if len(self.scored) > window:
+            del self.scored[: len(self.scored) - window]
+
+    @property
+    def offers_scored(self) -> int:
+        return len(self.scored)
 
 
 @dataclass(frozen=True)
@@ -103,6 +199,10 @@ class _Plan:
             expected_mxn_per_hour=round(self.rate, 1),
             factors=self.factors,
             rejected_because=rejected_because,
+            # Carried through so the evaluation layer can measure surge
+            # capture: the share of ACCEPTED orders that carried surge
+            # against the share among all offers seen.
+            surge_flag=self.offer.surge_flag,
         )
 
 
@@ -114,6 +214,7 @@ class SmartPolicy:
     def __init__(self, name: str | None = None) -> None:
         if name:
             self.name = name
+        self._memory = _ShiftMemory()
 
     # ------------------------------------------------------------------
     # The port method
@@ -122,14 +223,48 @@ class SmartPolicy:
     def decide(
         self, view: PlatformView, observation: Observation, courier: CourierSnapshot
     ) -> Decision:
-        index = CellIndex.from_heatmap(view.heatmap, observation.at_cell)
+        memory = self._memory
+        self._begin_minute(view, observation, courier)
+
+        index = CellIndex.from_heatmap(view.heatmap, observation.at_cell, memory.cell_coordinates)
         model = ForwardModel(observation, index)
 
-        plans = [self._plan(offer, view, observation, courier, model, index) for offer in view.offers]
-        threshold = self._threshold(observation, courier)
+        # Where the courier will actually BE when this job starts, and how
+        # many committed minutes stand between now and then. Both are zero /
+        # "here" when the courier is free; both matter when they are not.
+        start_lat, start_lon, committed_minutes = self._projected_start(courier, observation)
+        committing_early = bool(courier.carrying_order_ids)
+
+        plans = [
+            self._plan(offer, view, observation, courier, model, index, start_lat, start_lon)
+            for offer in view.offers
+        ]
+        for plan in plans:
+            memory.record(
+                rate=plan.rate,
+                # The confidence-discounted net, so the value distribution
+                # and the rate being compared against it are the same
+                # quantity in the same units.
+                net_mxn=plan.rate * plan.total_minutes / _MINUTES_PER_HOUR,
+                minutes=plan.total_minutes,
+                window=int(RESERVATION_CALIBRATION["recent_offer_window"]),
+            )
+
+        threshold = self._threshold(observation, courier, committed_minutes)
 
         feasible = [plan for plan in plans if plan.blocked is None]
         best = max(feasible, key=lambda plan: plan.rate) if feasible else None
+
+        if committing_early:
+            # Mid-job: the only thing the courier can do with their phone is
+            # take the next order or leave it. Repositioning, refuelling and
+            # resting are not available while committed to a leg, and the
+            # engine would ignore them anyway.
+            if best is not None and best.rate >= threshold:
+                return self._accept(best, plans, threshold, "none", view.minute,
+                                    committed_minutes=committed_minutes, courier=courier)
+            return self._stand_down(plans, threshold, courier, view.minute,
+                                    committed_minutes=committed_minutes)
 
         # 1. Fuel is time, and running dry mid-delivery costs far more time than
         #    planning the stop does.
@@ -139,12 +274,14 @@ class SmartPolicy:
 
         # 2. Take the best offer if it clears the bar.
         if best is not None and best.rate >= threshold:
-            return self._accept(best, plans, threshold, "none", view.minute)
+            return self._accept(best, plans, threshold, "none", view.minute,
+                                committed_minutes=committed_minutes, courier=courier)
 
         # 3. Being choosy is not free: below the floor the platform starves the
         #    courier of offers, so anything profitable beats holding out.
         if best is not None and self._acceptance_is_distressed(courier):
-            return self._accept(best, plans, threshold, "acceptance_rate", view.minute)
+            return self._accept(best, plans, threshold, "acceptance_rate", view.minute,
+                                committed_minutes=committed_minutes, courier=courier)
 
         # 4. Nothing worth taking. Moving towards believed demand may beat idling.
         reposition = self._reposition_decision(
@@ -153,7 +290,84 @@ class SmartPolicy:
         if reposition is not None:
             return reposition
 
-        return self._stand_down(plans, threshold, courier, view.minute)
+        return self._stand_down(plans, threshold, courier, view.minute,
+                                committed_minutes=committed_minutes)
+
+    # ------------------------------------------------------------------
+    # Shift memory
+    # ------------------------------------------------------------------
+
+    def _begin_minute(
+        self, view: PlatformView, observation: Observation, courier: CourierSnapshot
+    ) -> None:
+        """Housekeeping the courier does for free: notice a new shift has
+        started, note where they are standing, and drop the record of any
+        job they are no longer holding."""
+        memory = self._memory
+        if view.minute < memory.last_minute or courier.minutes_elapsed <= 1.0:
+            memory.reset()
+        memory.last_minute = view.minute
+
+        # A courier always knows which cell they are standing in and where
+        # they are standing. Remembering the pair is how the fine grid stops
+        # being a set of opaque ids they cannot locate.
+        if observation.at_cell:
+            memory.cell_coordinates[observation.at_cell] = (observation.at_lat, observation.at_lon)
+
+        still_held = set(courier.carrying_order_ids)
+        memory.held = [job for job in memory.held if job.order_id in still_held]
+
+        if view.offers or courier.carrying_order_ids:
+            memory.idle_streak_minutes = 0.0
+        else:
+            memory.idle_streak_minutes += 1.0
+
+    def _projected_start(
+        self, courier: CourierSnapshot, observation: Observation
+    ) -> tuple[float, float, float]:
+        """(lat, lon, committed_minutes) for the moment a NEW job would start.
+
+        Free courier: right here, right now. Committed courier: wherever the
+        last job they are holding drops them, after however many minutes of
+        that work is left.
+        """
+        memory = self._memory
+        if not courier.carrying_order_ids or not memory.held:
+            return courier.lat, courier.lon, 0.0
+        last = memory.held[-1]
+        committed = max(0.0, last.finish_estimate_min - float(observation.minute))
+        return last.dropoff_lat, last.dropoff_lon, committed
+
+    def _measured_wait_minutes(self, courier: CourierSnapshot) -> float | None:
+        """How long an ordinary wait for the next offer actually is, tonight.
+
+        `None` until the courier has lived through enough of the shift for
+        their own arrival count to mean anything — before that the fixed
+        prior in `DESTINATION_CALIBRATION` is the honest answer.
+        """
+        if self._memory.offers_scored < RESERVATION_CALIBRATION["min_offers_for_running_mean"]:
+            return None
+        return 1.0 / self._offers_per_minute(courier)
+
+    def _offers_per_minute(self, courier: CourierSnapshot) -> float:
+        """How often an offer arrives overall, from the courier's own tally.
+
+        `offers_seen` and `minutes_elapsed` are both self-knowledge. The
+        prior stops a single early offer (or none) from setting a nonsense
+        arrival rate; the clamps stop a degenerate one either way.
+        """
+        return self._blended_rate(courier.offers_seen, courier.minutes_elapsed)
+
+    def _blended_rate(self, offers: float, minutes: float) -> float:
+        cal = RESERVATION_CALIBRATION
+        prior_minutes = cal["prior_weight_minutes"]
+        prior_offers = cal["prior_offers_per_hour"] / _MINUTES_PER_HOUR * prior_minutes
+        rate = (prior_offers + offers) / (prior_minutes + max(0.0, minutes))
+        return clamp(
+            rate,
+            cal["min_offers_per_hour"] / _MINUTES_PER_HOUR,
+            cal["max_offers_per_hour"] / _MINUTES_PER_HOUR,
+        )
 
     # ------------------------------------------------------------------
     # Scoring one offer
@@ -167,6 +381,8 @@ class SmartPolicy:
         courier: CourierSnapshot,
         model: ForwardModel,
         index: CellIndex,
+        start_lat: float,
+        start_lon: float,
     ) -> _Plan:
         pickup_cell = index.nearest(offer.pickup_lat, offer.pickup_lon)
         dropoff_cell = index.nearest(offer.dropoff_lat, offer.dropoff_lon)
@@ -179,17 +395,26 @@ class SmartPolicy:
         ]
 
         # -- the job itself ------------------------------------------------
-        to_pickup = model.travel(courier.lat, courier.lon, offer.pickup_lat, offer.pickup_lon)
+        # From where the courier will BE when this job starts, which is not
+        # where they are standing if they are still finishing another one.
+        to_pickup = model.travel(start_lat, start_lon, offer.pickup_lat, offer.pickup_lon)
+        away_from_here_km = haversine_km(start_lat, start_lon, courier.lat, courier.lon)
         factors.append(
             ScoreFactor(
                 label="Ride to the restaurant",
                 delta_minutes=to_pickup.minutes,
-                note="%.1f km at a believed traffic factor of %.2f"
-                % (to_pickup.km, to_pickup.traffic_multiplier),
+                note="%.1f km at a believed traffic factor of %.2f%s"
+                % (
+                    to_pickup.km,
+                    to_pickup.traffic_multiplier,
+                    "" if away_from_here_km < 0.05
+                    else ", measured from where my current job drops me (%.1f km from here)"
+                    % away_from_here_km,
+                ),
             )
         )
 
-        kitchen = model.kitchen_wait(offer.restaurant_name)
+        kitchen = model.kitchen_wait(offer.restaurant_denue_id, offer.restaurant_name)
         factors.append(
             ScoreFactor(
                 label="Kitchen wait at %s" % offer.restaurant_name,
@@ -284,8 +509,8 @@ class SmartPolicy:
         net_mxn = offer.payout_mxn - cost_mxn - risk_mxn
 
         # -- where it leaves the courier -------------------------------------
-        demand = model.demand(dropoff_cell)
-        dead_minutes = model.dead_minutes(demand.value)
+        demand = model.demand(dropoff_cell, offer.dropoff_lat, offer.dropoff_lon)
+        dead_minutes = model.dead_minutes(demand.value, self._measured_wait_minutes(courier))
         factors.append(
             ScoreFactor(
                 label="Demand where it leaves me",
@@ -300,7 +525,7 @@ class SmartPolicy:
             offer.dropoff_lat, offer.dropoff_lon, courier.home_lat, courier.home_lon
         )
         home_from_here = model.travel(
-            courier.lat, courier.lon, courier.home_lat, courier.home_lon
+            start_lat, start_lon, courier.home_lat, courier.home_lon
         )
         urgency = self._homeward_urgency(observation)
         homeward_minutes = (home_from_dropoff.minutes - home_from_here.minutes) * urgency
@@ -430,11 +655,99 @@ class SmartPolicy:
         total = sum(weights)
         return clamp(sum(w * v for w, v in zip(weights, values)) / total, 0.0, 1.0)
 
-    def _threshold(self, observation: Observation, courier: CourierSnapshot) -> float:
-        """The MXN/hour bar an offer must clear, adapted to the situation.
+    def _threshold(
+        self, observation: Observation, courier: CourierSnapshot, committed_minutes: float = 0.0
+    ) -> float:
+        """The MXN/hour bar an offer must clear: what rejecting is worth.
 
-        Early in the shift a courier can afford to wait for a good one. Late,
-        or with an acceptance rate the platform is watching, they cannot.
+        Not a constant. Rejecting buys the chance of a better offer and
+        charges the unpaid minutes until one turns up, so the bar is the
+        rate the courier expects from waiting:
+
+            mean_net / (mean_minutes + wait) x 60
+
+        `wait` is `1 / arrival_rate`, both measured from this courier's own
+        shift. A courier already committed to `committed_minutes` of work
+        does not pay that wait — the next offer arrives while they are still
+        riding — so their bar for QUEUEING a job ahead uses only the part of
+        the wait their current job does not already cover. With a long job
+        still to run the bar rises to "better than average or leave it";
+        as the job nears its end it falls back toward the idle bar, because
+        an empty screen at the moment they go free costs real idle minutes.
+
+        Falls back to the fixed cold-start bar until enough offers have been
+        scored for a running mean to mean anything. See
+        `calibration.RESERVATION_CALIBRATION` for why a constant cannot be
+        the answer and what the old one measured as.
+        """
+        cal = RESERVATION_CALIBRATION
+        memory = self._memory
+        cold_start = self._cold_start_threshold(observation, courier)
+        if memory.offers_scored < cal["min_offers_for_running_mean"]:
+            return cold_start
+
+        arrival_rate = self._offers_per_minute(courier)
+        # Sorted best-first, so the first k entries are exactly the offers a
+        # bar set at the k-th rate would have accepted.
+        ranked = sorted(memory.scored, key=lambda item: item[0], reverse=True)
+        n = len(ranked)
+
+        best_value = 0.0
+        take_everything_value = 0.0
+        net_sum = 0.0
+        minutes_sum = 0.0
+        min_sample = int(cal["min_accepted_sample"])
+        for k, (_rate, net_mxn, minutes) in enumerate(ranked, start=1):
+            net_sum += net_mxn
+            minutes_sum += minutes
+            if k < min_sample:
+                # A bar only this-many offers ever cleared is a bar set from
+                # a sample too small to mean anything — and setting it there
+                # stops the courier accepting, which stops them gathering
+                # the samples that would bring it back down.
+                continue
+            share_accepted = k / n
+            # How long until an offer THIS FUSSY turns up. A stricter bar
+            # takes longer, which is the cost being weighed.
+            acceptable_per_minute = arrival_rate * share_accepted
+            # Committed work absorbs part of that wait: an offer arriving
+            # while the courier is still riding costs them nothing to have
+            # waited for. But offers arrive at RANDOM, not on a timetable —
+            # so what committed work buys is the PROBABILITY of being
+            # covered, not a guaranteed subtraction. With Poisson arrivals
+            # the chance nothing acceptable turns up in the remaining
+            # `committed_minutes` is exp(-rate x minutes), and only then
+            # does the courier eat the full wait.
+            #
+            # (Splitting this rate into a higher "while riding" and a lower
+            # "while parked" one is defensible and was tried: measured over
+            # five seeds it made the policy WORSE, -8.3% against the
+            # baseline versus -4.7% for this single-rate version, so the
+            # simpler model stands.)
+            missed = math.exp(-acceptable_per_minute * committed_minutes)
+            expected_idle = missed / acceptable_per_minute
+            denominator = minutes_sum / k + expected_idle
+            if denominator <= 0.0:
+                continue
+            value = net_sum / k / denominator * _MINUTES_PER_HOUR
+            best_value = max(best_value, value)
+            if k == n:
+                # The bar that rejects nothing: estimated from the whole
+                # sample, so the robust end of this calculation and the
+                # anchor the maximised value is shrunk toward.
+                take_everything_value = value
+
+        if best_value <= 0.0:
+            return cold_start
+        trust = n / (n + cal["optimism_shrinkage_offers"])
+        return take_everything_value + (best_value - take_everything_value) * trust
+
+    def _cold_start_threshold(self, observation: Observation, courier: CourierSnapshot) -> float:
+        """The bar before the courier has seen enough offers to compute one.
+
+        Kept as the old fixed reservation rate scaled by how much shift is
+        left and how the platform is treating them: a reasonable opening
+        guess, replaced by evidence within the first few offers.
         """
         shift_progress = ramp(
             float(observation.minutes_left_in_shift),
@@ -476,12 +789,40 @@ class SmartPolicy:
         threshold: float,
         binding: str,
         minute: int,
+        *,
+        committed_minutes: float = 0.0,
+        courier: CourierSnapshot | None = None,
     ) -> Decision:
+        # Remember what was agreed to: when this job should be done, and
+        # where it drops the courier. Both feed the next decision.
+        self._memory.held.append(
+            _HeldJob(
+                order_id=chosen.offer.order_id,
+                finish_estimate_min=minute + committed_minutes + chosen.paid_minutes,
+                dropoff_lat=chosen.offer.dropoff_lat,
+                dropoff_lon=chosen.offer.dropoff_lon,
+            )
+        )
+
         if binding == "acceptance_rate":
             summary = (
                 "Accepted %s at %.0f net MXN per hour even though my bar is %.0f, because my "
                 "acceptance rate is low enough that the app will start starving me of offers."
                 % (chosen.offer.order_id, chosen.rate, threshold)
+            )
+        elif committed_minutes > 0.0:
+            summary = (
+                "Queued %s from %s behind the job I am on: %.0f MXN per hour against a bar of "
+                "%.0f. I am committing about %.0f minutes early, which is worth it because the "
+                "next offer would most likely arrive while I am still riding anyway, so taking "
+                "this one costs me no waiting, and its kitchen starts cooking now."
+                % (
+                    chosen.offer.order_id,
+                    chosen.offer.restaurant_name,
+                    chosen.rate,
+                    threshold,
+                    committed_minutes,
+                )
             )
         else:
             summary = (
@@ -585,8 +926,20 @@ class SmartPolicy:
         Repositioning costs kilometres and minutes and earns nothing, so the
         expected unpaid wait it saves has to be bigger than the ride.
         """
-        here_demand = model.demand(observation.at_cell)
-        wait_here = model.dead_minutes(here_demand.value)
+        here_demand = model.demand(observation.at_cell, observation.at_lat, observation.at_lon)
+        # What standing here is expected to cost. Two sources, and the
+        # courier takes the worse: what they BELIEVE about local demand, and
+        # what has actually happened to them. A twenty-minute empty screen
+        # is evidence the flow does not reach this spot — evidence that
+        # beats any belief, and the thing that turns "go stand where it
+        # pays" from an opinion into a decision. Without it a courier parked
+        # in a dead zone believes the wait is eight minutes forever and
+        # never moves; measured, that cost one seed 82% of its shift idle
+        # for three deliveries.
+        wait_here = max(
+            model.dead_minutes(here_demand.value, self._measured_wait_minutes(courier)),
+            self._memory.idle_streak_minutes,
+        )
 
         best_cell: str | None = None
         best_gain_minutes = 0.0
@@ -594,7 +947,14 @@ class SmartPolicy:
         best_travel_minutes = 0.0
         best_demand = 0.0
 
-        for cell in observation.demand_by_cell:
+        # Every cell the courier can both NAME and PLACE: the app's own
+        # heatmap cells plus the fine-grid ones they have learned by standing
+        # in them. Iterating `observation.demand_by_cell` instead — as an
+        # earlier revision did — meant iterating fine-grid ids the courier
+        # has no coordinates for, so `coords_of` returned None for every
+        # single one and this whole function was dead code that could never
+        # move the courier anywhere.
+        for cell in index.known_cells():
             if cell == observation.at_cell:
                 continue
             coords = index.coords_of(cell)
@@ -607,8 +967,10 @@ class SmartPolicy:
                 continue
             if leg.minutes * 2.0 > float(observation.minutes_left_in_shift):
                 continue
-            there = model.demand(cell)
-            gain = wait_here - (leg.minutes + model.dead_minutes(there.value))
+            there = model.demand(cell, coords[0], coords[1])
+            gain = wait_here - (
+                leg.minutes + model.dead_minutes(there.value, self._measured_wait_minutes(courier))
+            )
             if gain > best_gain_minutes:
                 best_gain_minutes = gain
                 best_cell = cell
@@ -631,11 +993,13 @@ class SmartPolicy:
             return None
 
         summary = (
-            "Nothing on screen is worth %.0f MXN per hour, so I am riding %.1f km to %s: I believe "
-            "demand there is %.2f against %.2f here, which should save about %.0f unpaid minutes "
-            "for %.0f minutes of travel."
+            "%s, so I am riding %.1f km to %s: I believe demand there is %.2f against %.2f here, "
+            "which should save about %.0f unpaid minutes for %.0f minutes of travel."
             % (
-                threshold,
+                "I have stood here %.0f minutes with an empty screen"
+                % self._memory.idle_streak_minutes
+                if self._memory.idle_streak_minutes >= wait_here
+                else "Nothing on screen is worth %.0f MXN per hour" % threshold,
                 best_km,
                 best_cell,
                 best_demand,
@@ -664,6 +1028,8 @@ class SmartPolicy:
         threshold: float,
         courier: CourierSnapshot,
         minute: int,
+        *,
+        committed_minutes: float = 0.0,
     ) -> Decision:
         if not plans:
             summary = (
@@ -677,10 +1043,18 @@ class SmartPolicy:
                 reason = best.blocked_note or "it cannot be completed"
             else:
                 reason = "it scores %.0f MXN per hour against my %.0f bar" % (best.rate, threshold)
-            summary = (
-                "Rejected all %d offers: the best of them, %s, is out because %s."
-                % (len(plans), best.offer.order_id, reason)
-            )
+            if committed_minutes > 0.0:
+                summary = (
+                    "Left all %d offers: I still have about %.0f minutes of work in hand, so I can "
+                    "wait for something better than average without losing a minute to it, and "
+                    "the best on screen, %s, is out because %s."
+                    % (len(plans), committed_minutes, best.offer.order_id, reason)
+                )
+            else:
+                summary = (
+                    "Rejected all %d offers: the best of them, %s, is out because %s."
+                    % (len(plans), best.offer.order_id, reason)
+                )
             action = Action.REJECT
 
         return Decision(

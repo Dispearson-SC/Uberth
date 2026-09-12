@@ -106,6 +106,48 @@ class NetworkTravelOracle:
         matrix = TravelMatrix.build(graph, cell_index)
         return cls(matrix=matrix, traffic_by_minute={tick.minute: tick for tick in traffic_timeline})
 
+    def fork(self, traffic_timeline: list[TrafficTick]) -> "NetworkTravelOracle":
+        """A fresh, independent oracle sharing this one's EXPENSIVE parts.
+
+        `from_fixtures` costs one Dijkstra per operating cell over the full
+        Monterrey drive graph (~150 seconds measured). Nothing about that
+        work depends on the date, the seed, or the shift window, so a sweep
+        across policies/seeds/windows should pay it exactly once — which is
+        what this method is for.
+
+        It is NOT a cheap alias, and that distinction is load-bearing:
+        `apply_closure` mutates `matrix.distance_km`, `matrix.time_min` and
+        the cached node paths IN PLACE and never reopens a street (see the
+        class docstring). Sharing one oracle across runs would therefore
+        leak run A's closures into run B, and run B would start its shift
+        with a road that run A only lost at minute 143 — silently destroying
+        the hermetic A/B comparison the whole evaluation rests on.
+
+        So the fork copies exactly the mutable state and shares the rest:
+          - `distance_km` / `time_min`: copied (127x127 floats, microseconds).
+          - `_paths`: shallow dict copy. `close_streets` pops and REPLACES
+            entries rather than mutating the path lists themselves, so
+            sharing the list objects is safe.
+          - `graph`, `cell_order`, `cell_to_node`: shared. `close_streets`
+            assigns `self.graph = self.graph.copy()` before removing any
+            edge, so the base graph object is never mutated either.
+
+        Fork from an oracle that has never itself run a shift: a base that
+        already applied a closure hands that closure to every fork.
+        """
+        forked_matrix = TravelMatrix(
+            graph=self.matrix.graph,
+            cell_order=self.matrix.cell_order,
+            cell_to_node=self.matrix.cell_to_node,
+            distance_km=self.matrix.distance_km.copy(),
+            time_min=self.matrix.time_min.copy(),
+            _paths=dict(self.matrix._paths),
+        )
+        return NetworkTravelOracle(
+            matrix=forked_matrix,
+            traffic_by_minute={tick.minute: tick for tick in traffic_timeline},
+        )
+
     # -- TravelOracle protocol --------------------------------------------
 
     def travel(self, from_cell: str, to_cell: str, minute: int) -> tuple[float, float]:

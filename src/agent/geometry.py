@@ -11,7 +11,7 @@ enumerate the city, and never learns a cell it has not been shown.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclasses_field
 
 EARTH_RADIUS_KM = 6371.0088
 
@@ -35,13 +35,35 @@ class CellIndex:
 
     coordinates: dict[str, tuple[float, float]]
     fallback_cell: str
+    # Quantised demand level per heatmap cell, straight off the app's map.
+    levels: dict[str, int] = dataclasses_field(default_factory=dict)
 
     @classmethod
-    def from_heatmap(cls, heatmap, fallback_cell: str) -> "CellIndex":
-        return cls(
-            coordinates={cell.cell: (cell.lat, cell.lon) for cell in heatmap},
-            fallback_cell=fallback_cell,
-        )
+    def from_heatmap(cls, heatmap, fallback_cell: str, learned=None) -> "CellIndex":
+        """Build the agent's spatial vocabulary for this minute.
+
+        `heatmap` is what the app just showed: cell ids with coordinates.
+        They are, however, the app's own COARSE display cells, and the cell
+        ids keyed in `Observation.traffic_by_cell` and
+        `Observation.demand_by_cell` are a finer grid — so resolving a
+        coordinate against the heatmap alone produces a cell id that those
+        two dictionaries never contain, and every traffic and demand lookup
+        silently falls through to its prior. Measured, that meant the policy
+        was scoring every offer at default traffic and default demand for an
+        entire shift while believing it was reasoning about both.
+
+        `learned` closes that gap the only way the agent honestly can:
+        every minute, `Observation` tells the courier which cell they are
+        standing in AND where they are standing. Remembering those pairs
+        builds up real coordinates for the fine grid over the shift — a
+        courier learning their own city, one street at a time. Cells they
+        have never been to stay unknown, which is correct.
+        """
+        coordinates = {cell.cell: (cell.lat, cell.lon) for cell in heatmap}
+        levels = {cell.cell: cell.level for cell in heatmap}
+        if learned:
+            coordinates.update(learned)
+        return cls(coordinates=coordinates, fallback_cell=fallback_cell, levels=levels)
 
     def nearest(self, lat: float, lon: float) -> str:
         """The heatmap cell whose centroid is closest to a point.
@@ -60,6 +82,19 @@ class CellIndex:
 
     def coords_of(self, cell: str) -> tuple[float, float] | None:
         return self.coordinates.get(cell)
+
+    def nearest_level(self, lat: float, lon: float) -> int | None:
+        """Heat level of the heatmap cell covering a point, or None if the
+        app showed no map at all."""
+        best_level: int | None = None
+        best_km = float("inf")
+        for cell, level in self.levels.items():
+            cell_lat, cell_lon = self.coordinates[cell]
+            km = haversine_km(lat, lon, cell_lat, cell_lon)
+            if km < best_km:
+                best_km = km
+                best_level = level
+        return best_level
 
     def known_cells(self) -> list[str]:
         return sorted(self.coordinates)

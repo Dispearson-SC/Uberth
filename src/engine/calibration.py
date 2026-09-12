@@ -79,6 +79,59 @@ def acceptance_rate_offer_multiplier(
 
 
 # ---------------------------------------------------------------------------
+# OFFER FLOW: how offers reach the courier, and how many jobs they may hold.
+#
+# The single most consequential modelling choice in the engine, so it is
+# spelled out rather than buried. The first version of this loop only called
+# `PlatformPort.view_at` while the courier was IDLE. Measured, that courier
+# was busy 98% of the time, so they saw whatever happened to spawn within
+# reach during the one minute between finishing one delivery and starting the
+# next — usually one card, often none. Selectivity was worthless by
+# construction: a selective policy could only idle more and earn less, and the
+# A/B comparison measured nothing.
+#
+# What the app actually does, per the brief: "La app muestra un FLUJO de
+# pedidos, y el repartidor tiene SEGUNDOS para aceptar o rechazar." A FLOW,
+# and SECONDS. Not a menu. Three consequences, all of them load-bearing:
+#
+#   1. OFFERS ARE ALWAYS FRESH, AND NEVER COME BACK. An order reaches the
+#      courier during the minute it spawns and no other. Decline it, or be
+#      too busy to look, and another courier took it — it is gone forever.
+#      This engine therefore has NO offer store of any kind, deliberately:
+#      an accumulated backlog would let a choosy policy fish in a pond that
+#      has already been emptied, inflating every number in the comparison.
+#      (`OfferCard.expires_in_seconds` is 20-90 s; against a one-minute tick
+#      that resolves to exactly "this tick", which is why no expiry
+#      bookkeeping is needed to make the field real.)
+#
+#   2. A BUSY COURIER STILL GETS OFFERED THEIR NEXT JOB. Real platforms
+#      surface the next order while a courier is still finishing the current
+#      one, and accepting queues it. So the courier is not blind while
+#      riding — they are committing EARLIER and with LESS information, and
+#      that is the whole strategic tradeoff: commit now and eliminate the
+#      idle gap, or stay free and keep the option on something better while
+#      risking an empty screen at the moment you go idle.
+#
+#   3. THE QUEUE IS SHALLOW AND STRICTLY SEQUENTIAL. `max_jobs_in_hand`
+#      counts the job in progress PLUS anything accepted ahead. At 2 the
+#      courier may hold one job and have one waiting. They are done one
+#      after the other — finish A, then start B. This is QUEUEING, not
+#      batching: the courier never carries two orders at once, and the
+#      engine's phase machine has no representation for doing so.
+#      Once the courier is full the app stops offering, exactly as a real
+#      one does, so `offers_seen` stays the count of offers they could
+#      actually have taken.
+#
+# The brief's anchor is ~7.5 offers per courier-hour at roughly a 1-in-3
+# acceptance rate, giving ~2.5 deliveries/hour. A courier who keeps their
+# queue permanently full will see FEWER than 7.5 — that is not a calibration
+# error, it is the cost of never leaving a slot open.
+# ---------------------------------------------------------------------------
+OFFER_FLOW_CALIBRATION: dict[str, float] = {
+    "max_jobs_in_hand": 2.0,
+}
+
+# ---------------------------------------------------------------------------
 # StubPlatform (see stubs.py) — trivial offer-surfacing rules, not a claim
 # about how the real platform layer should route orders.
 # ---------------------------------------------------------------------------

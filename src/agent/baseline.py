@@ -94,6 +94,7 @@ class AcceptAllPolicy:
                 rejected_because=None
                 if offer.order_id == chosen.order_id
                 else "only one offer can be accepted this minute",
+                surge_flag=offer.surge_flag,
             )
             for offer in view.offers
         )
@@ -168,6 +169,7 @@ class NearestFirstPolicy:
                 if offer.order_id == chosen.order_id
                 else "a closer pickup was available (%.2f km vs %.2f km)"
                 % (pickup_km[chosen.order_id], pickup_km[offer.order_id]),
+                surge_flag=offer.surge_flag,
             )
             for offer in view.offers
         )

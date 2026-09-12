@@ -3,9 +3,11 @@
 This is the integration point of the whole system. `run_shift` ticks one
 simulated minute at a time and, every tick: activates exogenous events
 (street closures get a real ground-truth travel recompute), advances the
-courier along whatever leg/handling step it is mid-way through, and — only
-while the courier is free to act — builds the platform view and the
-observation and asks the policy what to do.
+courier along whatever leg/handling step it is mid-way through, and shows the
+courier whatever the app is offering RIGHT NOW — idle or mid-job — so the
+policy can either take a job to start immediately or queue its next one. Every
+offer lives for that minute only; nothing is stored (see
+`calibration.OFFER_FLOW_CALIBRATION`).
 
 Depends only on `src.core.ports` (the hexagonal contract) plus `src.world`
 (ground truth, which the engine is allowed to touch — it is the driving
@@ -30,10 +32,18 @@ THREE CONSTRAINTS BUILT IN FROM THE START (see module-level calibration in
      real minutes that earn nothing (`calibration.FUEL_CALIBRATION`).
 
 DESIGN SIMPLIFICATIONS, stated plainly rather than left implicit:
-  - The courier carries at most ONE order at a time. No batching. This is
-    what makes "only ask the policy while idle" a safe simplification: there
-    is never a moment where a second decision could be layered onto an
-    already-committed trip.
+  - The courier CARRIES at most one order at a time. No batching: two
+    orders are never in the bag together, and the phase machine has no
+    representation for that. They may however ACCEPT one job ahead
+    (`OFFER_FLOW_CALIBRATION["max_jobs_in_hand"]`) and start it the instant
+    the current one settles. Queueing, not batching — strictly sequential.
+  - A job accepted ahead has its kitchen cooking from the ACCEPT minute, not
+    from the minute the courier finally rides for it. That is the real
+    reward for committing early, and `_arrive` nets it off the prep time
+    exactly as it does for an immediate accept.
+  - Mid-job, ACCEPT is the only action available. REPOSITION, REFUEL and
+    REST are ignored while committed to a leg: a courier holding food does
+    not detour to a petrol station.
   - Kitchen wait realised on arrival nets off the travel time already spent:
     `wait = max(0, order.prep_minutes - (arrival_minute - accepted_minute))`.
     The COURIER never gets early knowledge of this (`prep_minutes` is never
@@ -55,7 +65,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from src.core.ports import (
@@ -67,6 +77,7 @@ from src.core.ports import (
     DeliveryRecord,
     EnrichmentPort,
     PlatformPort,
+    PlatformView,
     Policy,
     RecorderPort,
     ShiftResult,
@@ -76,6 +87,7 @@ from src.core.ports import (
 from src.engine.calibration import (
     FUEL_CALIBRATION,
     HANDLING_CALIBRATION,
+    OFFER_FLOW_CALIBRATION,
     PLAUSIBILITY_CALIBRATION,
 )
 from src.engine.travel import NetworkTravelOracle
@@ -110,6 +122,22 @@ class _Phase(StrEnum):
     RESTING = "resting"
 
 
+@dataclass(frozen=True)
+class _AcceptedJob:
+    """An order the courier has accepted but has not started yet.
+
+    The kitchen starts cooking at ACCEPTANCE, not at arrival, so
+    `accepted_at_min` has to survive the wait in the queue — it is what
+    `_arrive` nets the prep time off against. Accepting a job ten minutes
+    before you can start it means the food is ten minutes further along
+    when you get there, and that is exactly why committing early is worth
+    something.
+    """
+
+    order: OrderOffer
+    accepted_at_min: int
+
+
 @dataclass
 class _RuntimeState:
     """Engine-only mutable bookkeeping not covered by `CourierState`
@@ -129,6 +157,10 @@ class _RuntimeState:
     route_counter: int = 0
     current_route_id: str | None = None
     unpaid_km: float = 0.0
+    # Accepted-but-not-started jobs, oldest first. Strictly sequential: the
+    # courier finishes the job in hand, then starts the next one off this
+    # list. Never carried simultaneously.
+    queued_jobs: list[_AcceptedJob] = field(default_factory=list)
 
 
 def _default_home_cell() -> str:
@@ -209,7 +241,9 @@ def run_shift(
     `OfferCard` the platform shows as ground truth (it deliberately omits
     fields like `prep_minutes` and the fare decomposition); an ACCEPT is
     resolved back to the real `OrderOffer` by looking it up in
-    `scenario.order_stream`, keyed by `spawn_min`. If `scenario` is built
+    `scenario.order_stream`, keyed by the `spawn_min` this engine recorded
+    when the platform surfaced that card (which may be several minutes
+    before the courier was free to accept it — see `_QueuedOffer`). If `scenario` is built
     without its `order_stream` (e.g. `Scenario(seed=..., date=...)` with the
     field left at its `Field(default_factory=list)` default) while the
     platform is built from a real order stream, every single ACCEPT will
@@ -241,6 +275,21 @@ def run_shift(
     deliveries: list[DeliveryRecord] = []
     ticks: list[TickRecord] = []
 
+    # Cells this engine can route to, and a memo of how a policy's
+    # out-of-grid REPOSITION targets map onto them (see
+    # `_resolve_target_cell`). Built lazily: a policy that only ever names
+    # real operating cells never pays for either.
+    known_cells: set[str] = set(getattr(getattr(travel, "matrix", None), "cell_order", []) or [])
+    if not known_cells:
+        known_cells = set(geo.load_cell_index()["cell"].tolist())
+    target_cell_cache: dict[str, str | None] = {}
+
+    # Optional capability beyond the bare EnrichmentPort protocol: a real
+    # enrichment adapter learns kitchen speed from the courier's own
+    # experience and needs to be told what that experience was. A minimal
+    # test double that does not implement it simply never learns.
+    record_kitchen_visit = getattr(enrichment, "record_kitchen_visit", None)
+
     # -- small helpers closing over the mutable state above -----------------
 
     def _current_purpose() -> TripPurpose | None:
@@ -259,7 +308,13 @@ def run_shift(
             km_traveled=courier.km_traveled,
             minutes_elapsed=courier.minutes_elapsed,
             minutes_idle=courier.minutes_idle,
-            carrying_order_ids=tuple(o.order_id for o in courier.active_orders),
+            # Everything the courier is on the hook for: the job in progress
+            # first, then anything accepted ahead of it. A policy reading
+            # this against `activity` can tell "riding, nothing queued"
+            # (a slot is open) from "riding, one queued" (full) — which is
+            # exactly the state its commit-early decision turns on.
+            carrying_order_ids=tuple(o.order_id for o in courier.active_orders)
+            + tuple(job.order.order_id for job in state.queued_jobs),
             offers_seen=state.offers_seen,
             offers_accepted=state.offers_accepted,
             fuel_minutes_remaining=state.fuel_minutes_remaining,
@@ -267,6 +322,53 @@ def run_shift(
             home_lon=home_lon,
             minutes_left_in_shift=max(0, scenario.shift_end_min - minute),
         )
+
+    def _resolve_target_cell(cell: str) -> str | None:
+        """Turn a policy's REPOSITION target into a cell this engine can
+        actually route to.
+
+        A policy's spatial vocabulary is whatever the app showed it, and the
+        in-app heatmap is drawn on a COARSER grid than the operating cells
+        the travel matrix is built from — so "ride to that district" is a
+        perfectly sensible instruction that names a cell id the matrix has
+        never heard of. Resolving it to the nearest operating cell to that
+        district's centre is what a courier does with the same instruction.
+        An unresolvable target returns None and the move is a no-op rather
+        than a crash: a courier cannot ride somewhere that does not exist,
+        but they also do not fall over when told to.
+        """
+        if cell in known_cells:
+            return cell
+        if cell in target_cell_cache:
+            return target_cell_cache[cell]
+        resolved: str | None = None
+        try:
+            lat, lon = geo.cell_centroid(cell)
+        except Exception:
+            target_cell_cache[cell] = None
+            return None
+        best = math.inf
+        for row in geo.load_cell_index().itertuples():
+            distance = geo.great_circle_km(lat, lon, row.lat, row.lon)
+            if distance < best:
+                best = distance
+                resolved = str(row.cell)
+        target_cell_cache[cell] = resolved
+        return resolved
+
+    def _jobs_in_hand() -> int:
+        return len(courier.active_orders) + len(state.queued_jobs)
+
+    def _has_room_for_another_job() -> bool:
+        """Is the app willing to offer this courier anything at all?
+
+        A courier already holding the maximum gets shown nothing, exactly as
+        a real app stops offering once your queue is full. This keeps
+        `offers_seen` meaning "offers this courier could actually have
+        taken", which is the only denominator that makes the acceptance rate
+        a fair number.
+        """
+        return _jobs_in_hand() < int(OFFER_FLOW_CALIBRATION["max_jobs_in_hand"])
 
     def _start_route(from_cell: str, to_cell: str) -> str | None:
         if route_polyline is None:
@@ -315,6 +417,17 @@ def run_shift(
             # courier never learns `prep_minutes` before this moment.
             wait = max(0.0, order_offer.prep_minutes - elapsed_since_accept)
             state.current_kitchen_wait = wait
+            # What the COURIER measures, on their own clock: the food was
+            # ready `elapsed + wait` minutes after they accepted. When they
+            # waited, that is exactly `prep_minutes`. When they arrived to
+            # find it already done, it is `elapsed` — an over-estimate they
+            # genuinely cannot see past, which is the honest reading. Never
+            # `prep_minutes` directly: that would hand the courier a number
+            # nobody told them.
+            if record_kitchen_visit is not None:
+                record_kitchen_visit(
+                    order_offer.restaurant_denue_id, float(elapsed_since_accept + wait), minute
+                )
             if wait > 0:
                 state.phase = _Phase.WAITING_KITCHEN
                 state.phase_remaining = wait
@@ -388,6 +501,11 @@ def run_shift(
                 order_state.minutes_actual = state.current_delivery_minutes
                 record = _settle_delivery(minute)
                 state.phase = _Phase.IDLE
+                # Chain straight into whatever was accepted ahead: a courier
+                # with their next job already in hand does not stand around
+                # waiting to be asked. This is where committing early pays
+                # for itself — in idle minutes that never happen.
+                _start_next_job(minute)
                 return record
             return None
         if phase is _Phase.MOVING:
@@ -408,8 +526,67 @@ def run_shift(
         courier.minutes_idle += TICK_MINUTES
         return None
 
-    def _apply_decision(decision: Decision, minute: int, offered_order_ids: frozenset[str]) -> None:
-        if decision.action == Action.ACCEPT and decision.order_id is not None and not courier.active_orders:
+    def _start_next_job(minute: int) -> None:
+        """Pull the next accepted job off the queue and ride for its
+        restaurant. Called the instant a delivery settles, which is what
+        removes the idle gap between chained deliveries — and the reason a
+        policy that commits early earns those minutes back."""
+        if courier.active_orders or not state.queued_jobs:
+            return
+        job = state.queued_jobs.pop(0)
+        order = job.order
+        order_state = OrderState(
+            order_id=order.order_id,
+            restaurant=RestaurantRef(
+                denue_id=order.restaurant_denue_id,
+                cell=order.origin_cell,
+                lat=order.origin_lat,
+                lon=order.origin_lon,
+            ),
+            destination=DestinationRef(cell=order.dest_cell, lat=order.dest_lat, lon=order.dest_lon),
+            base_payout_mxn=order.gross_payout_mxn,
+            # Surge LOCKED at acceptance, never re-evaluated at delivery — a
+            # courier cannot wait for the multiplier to rise while holding
+            # food, and cannot wait for it to rise while queued either.
+            surge_multiplier=order.surge_at_spawn,
+            surge_locked=True,
+            tip_mxn=order.tip_mxn,
+            # The ACCEPTANCE minute, not the minute the ride starts: the
+            # kitchen has been cooking since the courier tapped accept.
+            accepted_at_min=job.accepted_at_min,
+        )
+        courier.active_orders.append(order_state)
+        state.current_order_offer = order
+        km, minutes = travel.travel(courier.cell, order.origin_cell, minute)
+        minutes = max(minutes, HANDLING_CALIBRATION["min_leg_minutes"])
+        leg = TripLeg(
+            from_cell=courier.cell,
+            to_cell=order.origin_cell,
+            km=km,
+            minutes=minutes,
+            purpose=TripPurpose.TO_RESTAURANT,
+            start_min=minute,
+        )
+        courier.current_leg = leg
+        state.leg_progress = 0.0
+        state.phase = _Phase.MOVING
+        state.current_route_id = _start_route(courier.cell, order.origin_cell)
+
+    def _apply_decision(decision: Decision, minute: int, offered_order_ids: frozenset[str], *,
+                        free_to_act: bool) -> None:
+        """Apply one policy decision.
+
+        `free_to_act` is False when the courier is mid-job: the app can push
+        them their NEXT order and they can tap accept at a red light, but
+        they cannot reposition, refuel or rest while committed to a leg.
+        Those actions are simply not available, so they are ignored rather
+        than queued — a policy asking for them mid-job gets a no-op, exactly
+        as it would from the real app.
+        """
+        if decision.action == Action.ACCEPT and decision.order_id is not None and _has_room_for_another_job():
+            # Offers are fresh only: an order reaches the courier during the
+            # minute it spawns and no other, so the ground-truth lookup is
+            # keyed on THIS minute. There is no offer store to consult.
             order = next((o for o in orders_by_minute.get(minute, []) if o.order_id == decision.order_id), None)
             if order is None and decision.order_id in offered_order_ids:
                 # The platform showed this exact order_id this exact tick
@@ -425,7 +602,7 @@ def run_shift(
                 # an all-idle, all-zero shift. Fail loudly here instead of
                 # letting that run for hours before anyone notices.
                 raise ValueError(
-                    f"ACCEPT for order_id={decision.order_id!r} at minute={minute} was just shown by the "
+                    f"ACCEPT for order_id={decision.order_id!r} at minute={minute} was shown by the "
                     f"platform (it is in this tick's PlatformView.offers) but does not exist in "
                     f"scenario.order_stream at spawn_min={minute}. run_shift resolves an accepted "
                     "order's ground truth (restaurant location, prep time, fare, surge, tip) from "
@@ -435,47 +612,26 @@ def run_shift(
                     "(e.g. StubPlatform(orders_by_minute)); they must be the same collection."
                 )
             if order is not None:
-                order_state = OrderState(
-                    order_id=order.order_id,
-                    restaurant=RestaurantRef(
-                        denue_id=order.restaurant_denue_id,
-                        cell=order.origin_cell,
-                        lat=order.origin_lat,
-                        lon=order.origin_lon,
-                    ),
-                    destination=DestinationRef(cell=order.dest_cell, lat=order.dest_lat, lon=order.dest_lon),
-                    base_payout_mxn=order.gross_payout_mxn,
-                    # Surge LOCKED at acceptance, never re-evaluated at
-                    # delivery — a courier cannot wait for the multiplier to
-                    # rise while holding food.
-                    surge_multiplier=order.surge_at_spawn,
-                    surge_locked=True,
-                    tip_mxn=order.tip_mxn,
-                    accepted_at_min=minute,
-                )
-                courier.active_orders.append(order_state)
-                state.current_order_offer = order
+                # Accepted. The kitchen starts cooking NOW, whether the
+                # courier can ride for it now or has to finish the job in
+                # hand first — which is the entire value of committing
+                # early, and the entire risk of committing to the wrong one.
+                state.queued_jobs.append(_AcceptedJob(order=order, accepted_at_min=minute))
                 state.offers_accepted += 1
-                km, minutes = travel.travel(courier.cell, order.origin_cell, minute)
-                minutes = max(minutes, HANDLING_CALIBRATION["min_leg_minutes"])
-                leg = TripLeg(
-                    from_cell=courier.cell,
-                    to_cell=order.origin_cell,
-                    km=km,
-                    minutes=minutes,
-                    purpose=TripPurpose.TO_RESTAURANT,
-                    start_min=minute,
-                )
-                courier.current_leg = leg
-                state.leg_progress = 0.0
-                state.phase = _Phase.MOVING
-                state.current_route_id = _start_route(courier.cell, order.origin_cell)
+                if state.phase is _Phase.IDLE and not courier.active_orders:
+                    _start_next_job(minute)
+        elif not free_to_act:
+            # Mid-job: nothing but ACCEPT is available. No-op.
+            return
         elif decision.action == Action.REPOSITION and decision.target_cell is not None:
-            km, minutes = travel.travel(courier.cell, decision.target_cell, minute)
+            target_cell = _resolve_target_cell(decision.target_cell)
+            if target_cell is None or target_cell == courier.cell:
+                return
+            km, minutes = travel.travel(courier.cell, target_cell, minute)
             minutes = max(minutes, HANDLING_CALIBRATION["min_leg_minutes"])
             leg = TripLeg(
                 from_cell=courier.cell,
-                to_cell=decision.target_cell,
+                to_cell=target_cell,
                 km=km,
                 minutes=minutes,
                 purpose=TripPurpose.REPOSITION,
@@ -484,7 +640,7 @@ def run_shift(
             courier.current_leg = leg
             state.leg_progress = 0.0
             state.phase = _Phase.MOVING
-            state.current_route_id = _start_route(courier.cell, decision.target_cell)
+            state.current_route_id = _start_route(courier.cell, target_cell)
         elif decision.action == Action.REFUEL:
             state.phase = _Phase.REFUELLING
             state.phase_remaining = FUEL_CALIBRATION["refuel_stop_minutes"]
@@ -545,20 +701,35 @@ def run_shift(
             )
 
         # 3. Enrichment runs every tick regardless of activity — a courier's
-        #    own tools keep working mid-delivery; only the ABILITY TO ACT on
-        #    a new offer is gated on being idle (single-order-at-a-time).
+        #    own tools keep working mid-delivery, and so does their phone.
         pre_snapshot = _build_snapshot(minute, _activity_for(state.phase, _current_purpose()))
         observation = enrichment.observe(minute, pre_snapshot)
         perceived_event_ids = tuple(pe.event_id for pe in observation.perceived_events)
 
+        # 4. Offer flow. The app shows a FLOW of offers, and each one lives
+        #    for this minute only — accept it now or somebody else takes it.
+        #    It pushes them whether the courier is idle or mid-job (that is
+        #    how a next order gets queued), and stops entirely once the
+        #    courier is holding all they may hold. Nothing is ever stored
+        #    for later: see `calibration.OFFER_FLOW_CALIBRATION`.
         offers_shown = 0
-        if state.phase is _Phase.IDLE:
-            view = platform.view_at(minute, pre_snapshot)
-            offers_shown = len(view.offers)
-            state.offers_seen += offers_shown
-            decision = policy.decide(view, observation, pre_snapshot)
-            offered_order_ids = frozenset(offer.order_id for offer in view.offers)
-            _apply_decision(decision, minute, offered_order_ids)
+        if decision is None:  # not already commandeered by a forced refuel
+            free_to_act = state.phase is _Phase.IDLE
+            view: PlatformView | None = None
+            if _has_room_for_another_job():
+                view = platform.view_at(minute, pre_snapshot)
+                state.offers_seen += len(view.offers)
+            elif free_to_act:
+                # Idle with a full queue cannot happen (an accepted job
+                # starts the moment the courier is free), but a policy is
+                # still owed a view to act on if it ever does.
+                view = replace(platform.view_at(minute, pre_snapshot), offers=())
+
+            offers_shown = len(view.offers) if view is not None else 0
+            if view is not None and (free_to_act or view.offers):
+                decision = policy.decide(view, observation, pre_snapshot)
+                offered_order_ids = frozenset(offer.order_id for offer in view.offers)
+                _apply_decision(decision, minute, offered_order_ids, free_to_act=free_to_act)
 
         delivered = _advance_phase(minute)
         courier.minutes_elapsed += TICK_MINUTES
@@ -568,11 +739,34 @@ def run_shift(
 
     post_shift_minute = scenario.shift_end_min
     for _ in range(MAX_POST_SHIFT_TICKS):
-        if state.phase is _Phase.IDLE and courier.cell == home_cell and not courier.active_orders:
+        if (
+            state.phase is _Phase.IDLE
+            and courier.cell == home_cell
+            and not courier.active_orders
+            and not state.queued_jobs
+        ):
             break
 
         decision = None
-        if state.fuel_minutes_remaining <= 0.0 and state.phase is _Phase.IDLE:
+        if state.phase is _Phase.IDLE and not courier.active_orders and state.queued_jobs:
+            # An order accepted before the bell still has to be delivered.
+            # Committing early late in the shift buys chained minutes; it
+            # also buys unpaid overtime, and the courier pays for both.
+            _start_next_job(post_shift_minute)
+            decision = Decision(
+                action=Action.ACCEPT,
+                order_id=courier.active_orders[-1].order_id,
+                target_cell=None,
+                trace=DecisionTrace(
+                    minute=post_shift_minute,
+                    considered=(),
+                    chosen_order_id=courier.active_orders[-1].order_id,
+                    threshold_mxn_per_hour=0.0,
+                    binding_constraint="none",
+                    summary="Shift over: starting an order accepted before the bell.",
+                ),
+            )
+        elif state.fuel_minutes_remaining <= 0.0 and state.phase is _Phase.IDLE:
             state.phase = _Phase.REFUELLING
             state.phase_remaining = FUEL_CALIBRATION["refuel_stop_minutes"]
             decision = Decision(

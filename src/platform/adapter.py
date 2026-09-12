@@ -184,14 +184,48 @@ REACH_CALIBRATION: dict[str, float] = {
     # above 1 (a real but bounded positional edge), never near 3 (a
     # selection artefact), while keeping total reach volume near the
     # brief's ~7.5 offers/hour target.
-    "baseline_reach_km": 0.35,
+    # 0.70, up from 0.35, and paired with a `max_offers_per_minute` of 1
+    # (below). Both are MEASUREMENT corrections against the brief's ~7.5
+    # offers-per-courier-hour anchor, not a loosening; the reach MECHANISM
+    # is untouched (still a radius around the ORDER'S RESTAURANT, still
+    # expanding into undersupplied areas and contracting in crowded ones,
+    # still bounded by `max_expansion_ratio` for the anti-correlation reason
+    # documented above). Only the radius at `reference_supply` moved, and
+    # the reason it had to is worth recording:
+    #
+    # 0.35 was tuned before the engine polled this adapter every minute. Run
+    # against a courier polled every minute along a real working trajectory
+    # (`scripts/run_shift.py --probe`, which exists to measure exactly this)
+    # it delivered 4.5 offers/hour. Worse, that average hid a brutal
+    # asymmetry: a courier RIDING passes restaurant after restaurant, while
+    # a courier standing where their last customer happened to live is
+    # 450 m from nothing at all. Measured, a parked courier saw as little as
+    # 1.1 offers/hour on some seeds — so ANY policy that ever chose to wait
+    # was starved into a spiral, and "never be idle" won by default no
+    # matter how bad the work it took. That is not a courier app; a real one
+    # reaches kilometres, not street corners.
+    #
+    # Raising reach alone would flood a well-placed courier, so the per-
+    # minute cap drops to 1 at the same time — which is also simply more
+    # faithful to the brief ("la app muestra un FLUJO de pedidos, y el
+    # repartidor tiene SEGUNDOS para aceptar o rechazar": a flow with
+    # seconds on the clock, not a menu to browse). The cap holds a
+    # well-placed courier near the anchor while the wider radius lets a
+    # parked one still see work. Measured over five seeds at 0.70/1: 7.9
+    # offers per courier-hour against the 7.5 anchor. Sensitivity is real
+    # and worth knowing: 0.70 and 0.80 both land near the anchor, 0.60 falls
+    # to 5.9 and 0.90 climbs to 8.9.
+    "baseline_reach_km": 0.70,
     "reference_supply": 5.0,
     "supply_floor": 1.0,
     "expansion_softening": 0.35,
     "max_expansion_ratio": 1.35,
     # At most this many offers reach a courier in a single simulated minute,
     # before the acceptance-rate penalty (below) can shrink it further.
-    "max_offers_per_minute": 2,
+    # ONE: the app shows a flow, one card at a time, with seconds to decide
+    # — not a shortlist to rank. See `baseline_reach_km` above for why this
+    # and the radius were recalibrated together.
+    "max_offers_per_minute": 1,
 }
 
 ACCEPTANCE_RETALIATION_CALIBRATION: dict[str, float] = {
