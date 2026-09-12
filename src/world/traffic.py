@@ -7,40 +7,53 @@ The courier cannot influence traffic and must not be able to read the exact
 multipliers it experiences from this file.
 
 HONESTY NOTE / DATA PROVENANCE (read before trusting any number below):
-there is no free, public per-hour or per-edge traffic dataset for
-Monterrey. TomTom's free hourly Traffic Index downloads cover only 11
-cities worldwide (Dublin, Los Angeles, London, Chicago, Berlin, Bangkok,
-Tokyo, Sydney, Paris, New York City, Mexico City) — Monterrey is not one
-of them, and Monterrey-specific data would require TomTom's paid Area
-Analytics product, which this project does not use. Uber Movement, the
-other historical source for this kind of data, is effectively
-discontinued. Nothing in this module may ever be labeled "Monterrey
-traffic data" — it is not that.
+this module used to borrow its temporal shape from Mexico City because no
+Monterrey-specific traffic dataset existed. That is no longer true for
+weekdays. We purchased TomTom's paid Traffic Stats Area Analysis product
+for our exact operating-area polygon (Monterrey, San Pedro, San Nicolas,
+Guadalupe), July 2026, 24 weekday hourly time sets (`WD-00`..`WD-23`,
+Monday-Friday). That raw fixture
+(`fixtures/raw/tomtom_monterrey_areaanalysis.json`, ~2.63 GB, never
+committed to git and never read at simulator runtime) was reduced by
+`scripts/derive_monterrey_traffic_profile.py` — a single streaming
+(`ijson`) pass computing, per hour, the distance-weighted harmonic-mean
+network speed across ~358k real Monterrey road segments — into the
+compact, committed, human-auditable artifact this module actually loads:
+`fixtures/monterrey_hourly_profile.csv` (24 rows). See that script's
+docstring for the exact aggregation method, the low-sample-size filter,
+and the empirical free-flow reference-hour choice.
 
-What `HOURLY_CONGESTION_MULTIPLIER` actually is: the *timing/shape* of the
-24h curve (when the peaks and troughs fall, and their relative size) is
-derived from a real, measured dataset — `fixtures/raw/tomtom_mexico_city_hourly.csv`,
-TomTom's free hourly series for Mexico City (4,344 hourly rows, 2025-01-01
-through 2025-06-30). The reasoning for transferring *timing* from Mexico
-City to Monterrey: both are Mexican metros on the same work/school/meal
-schedule (comida hour, morning/evening commute windows), so the hours at
-which congestion peaks and troughs are far more transferable across
-Mexican cities than the *magnitude* of the congestion itself. The
-*magnitude* is explicitly NOT transferred: Mexico City is structurally far
-more congested than Monterrey, so the derived shape is re-scaled down to
-plausible Monterrey levels by one explicit, clearly-labeled calibration
-knob, `MONTERREY_CONGESTION_SCALE` — pinned by simulator sanity checks
-(plausible courier earnings/hour and deliveries/hour), NOT by any measured
-Monterrey traffic figure. See `derive_hourly_multiplier_table_from_csv`
-for the exact, reproducible derivation of the baked table below.
+What is and is not measured, precisely:
+
+- WEEKDAY shape AND magnitude: 100% measured Monterrey data (the CSV
+  above). Nothing about the weekday curve is transferred from Mexico City
+  any more, and there is no re-scaling knob on it: the congestion
+  multiplier is directly `free_flow_hour_speed / hour_speed`, both real
+  network speeds.
+- WEEKEND shape: still TRANSFERRED, not measured. TomTom's Area Analysis
+  trial only covered 24 time sets, and we spent all 24 on the weekday
+  curve (the shape that matters most for a courier simulator, since most
+  shifts are weekdays). The weekend curve is therefore built by taking the
+  real Monterrey weekday curve and reshaping it with the
+  weekend-vs-weekday RATIO measured in Mexico City's free hourly TomTom
+  series (`fixtures/raw/tomtom_mexico_city_hourly.csv`, 4,344 hourly rows,
+  2025-01-01 through 2025-06-30): `derive_weekend_weekday_ratio_table_from_csv`
+  computes, per hour, how much less (or more) congested Mexico City is on
+  a weekend vs. a weekday at that same hour, and that ratio is applied to
+  how far *above free flow* the real Monterrey weekday number sits. The
+  reasoning for transferring this specific ratio: both are Mexican metros
+  on the same work/school/meal schedule, so *how much weekend traffic
+  eases off relative to a weekday* is far more transferable across Mexican
+  cities than an absolute congestion level would be. Nothing in this
+  module may be labeled "measured Monterrey weekend data" — it is not
+  that; it is real Monterrey weekday data reshaped by a transferred ratio.
 
 Two exogenous inputs combine multiplicatively into one congestion field:
 
 1. A city-wide, time-of-day/day-type baseline (`HOURLY_CONGESTION_MULTIPLIER`),
-   whose timing/shape is derived from the real Mexico City TomTom series
-   described above (morning peak, a midday dip, a more pronounced evening
-   peak, a quiet night, and a flatter weekend) and whose magnitude is
-   re-anchored to Monterrey via `MONTERREY_CONGESTION_SCALE`.
+   whose weekday numbers are measured Monterrey network speeds and whose
+   weekend numbers are those same measured weekday numbers reshaped by the
+   Mexico City weekend/weekday ratio described above.
 2. A per-H3-cell spatial "zone factor" derived from a real, auditable
    density proxy (road-network edge density from the OSMnx drive graph
    when available, otherwise commercial/DENUE restaurant density) — never
@@ -63,7 +76,9 @@ the single place that invariant is enforced against actual usage.
 Determinism: `build_traffic_timeline` is a pure function of its arguments
 plus the fixed calibration tables and the fixture-derived zone factors. It
 uses no randomness and no hidden global/mutable state (the zone-factor
-cache is a memoized pure computation over on-disk fixtures, not run state).
+cache is a memoized pure computation over on-disk fixtures, not run state;
+`HOURLY_CONGESTION_MULTIPLIER` is likewise a pure, deterministic function
+of the two small on-disk source CSVs, loaded once at import time).
 """
 
 from __future__ import annotations
@@ -122,129 +137,131 @@ def day_type_for_date(date: Date) -> DayType:
 # A. Calibration table: city-wide baseline by (day_type, hour)
 # ----------------------------------------------------------------------------
 
-# Real, measured source series for the *timing/shape* of the daily curve.
-# TomTom's free hourly Traffic Index download; Mexico City, not Monterrey
-# (Monterrey is not one of the 11 cities TomTom publishes for free — see
-# the module docstring). Used only to source WHEN congestion peaks/dips,
-# never as a claim about Monterrey's own congestion level.
+# Compact, committed artifact produced by
+# `scripts/derive_monterrey_traffic_profile.py` from the raw ~2.63 GB TomTom
+# Area Analysis fixture (see module docstring). This is the ONLY traffic
+# input read at runtime — the raw fixture is never opened outside that
+# offline derivation script. 24 rows: hour, harmonic_speed_kmh,
+# congestion_multiplier, sample_size, total_distance_km, segment_count.
+MONTERREY_HOURLY_PROFILE_CSV_PATH = FIXTURES_DIR / "monterrey_hourly_profile.csv"
+
+# Real, measured source series used ONLY to derive the weekend-vs-weekday
+# RATIO (see module docstring — the weekday curve above needs no help from
+# this any more). TomTom's free hourly Traffic Index download for Mexico
+# City, not Monterrey (Monterrey is not one of the 11 cities TomTom
+# publishes for free).
 TOMTOM_MEXICO_CITY_CSV_PATH = FIXTURES_DIR / "raw" / "tomtom_mexico_city_hourly.csv"
 
-# CALIBRATION / TUNING KNOB — NOT MEASURED DATA. Re-scales the dimensionless
-# Mexico City shape down to a plausible Monterrey magnitude. Mexico City is
-# structurally far more congested than Monterrey, so the raw normalized
-# curve (which peaks above 2x its own series mean) is not usable directly.
-# 0.40 was picked so the weekday evening peak lands at ~1.84x free flow and
-# deep night sits at ~1.0x — pinned by simulator sanity checks (plausible
-# courier earnings/hour and deliveries/hour for an 8h Monterrey shift), NOT
-# by any measured Monterrey congestion figure.
-MONTERREY_CONGESTION_SCALE = 0.40
+
+def load_monterrey_weekday_multiplier_table(
+    csv_path: Path = MONTERREY_HOURLY_PROFILE_CSV_PATH,
+) -> dict[int, float]:
+    """Load the real, measured Monterrey weekday congestion multiplier per
+    hour straight from the compact derived CSV — no re-scaling, no
+    transformation. `congestion_multiplier` in that file is already
+    `free_flow_hour_speed / hour_speed` computed from real network speeds
+    by `scripts/derive_monterrey_traffic_profile.py`."""
+    frame = pd.read_csv(csv_path)
+    table = {int(row.hour): _clamp_min(float(row.congestion_multiplier)) for row in frame.itertuples()}
+    if sorted(table) != list(range(24)):
+        raise ValueError(f"Expected hours 0..23 in {csv_path}, got {sorted(table)}")
+    return table
 
 
-def derive_hourly_multiplier_table_from_csv(
+# CALIBRATION / NUMERICAL-STABILITY KNOB — NOT a magnitude-anchoring knob
+# like the retired `MONTERREY_CONGESTION_SCALE`. Caps the raw Mexico City
+# weekend/weekday ratio from above only. At true overnight hours (roughly
+# 00:00-04:00) Mexico City's own WEEKDAY congestion level is itself close to
+# 0% (a near-empty road network), so dividing weekend-by-weekday there is a
+# division of two small, noisy numbers: the raw ratio spikes as high as
+# ~7.7x (see `derive_weekend_weekday_ratio_table_from_csv` docstring for the
+# measured per-hour ratios). That spike is a real, measured Mexico City
+# phenomenon (weekend nightlife keeps its own overnight roads busier, in
+# *relative* terms, than a dead-quiet weekday night) — but transferring an
+# uncapped 7.7x multiplicatively onto the real Monterrey weekday curve,
+# where the same overnight hours already carry a non-trivial measured extra
+# (unlike Mexico City's near-zero weekday baseline there), would inflate
+# Monterrey's weekend early-morning multiplier close to or above its own
+# measured weekday midday peak — implausible for a simulator whose whole
+# point is plausible courier economics. The low end of the ratio (as low as
+# ~0.18 during the weekday-only commute peak, where weekend traffic
+# genuinely collapses because nobody commutes) is a believable signal, not
+# noise, and is intentionally left uncapped.
+MAX_TRANSFERABLE_WEEKEND_RATIO = 2.0
+
+
+def derive_weekend_weekday_ratio_table_from_csv(
     csv_path: Path = TOMTOM_MEXICO_CITY_CSV_PATH,
-    scale: float = MONTERREY_CONGESTION_SCALE,
-) -> dict[tuple[DayType, int], float]:
-    """Reproducible derivation of `HOURLY_CONGESTION_MULTIPLIER` from the
-    real TomTom Mexico City hourly series.
+    max_ratio: float = MAX_TRANSFERABLE_WEEKEND_RATIO,
+) -> dict[int, float]:
+    """Reproducible derivation of the weekend/weekday congestion RATIO per
+    hour from the real TomTom Mexico City hourly series. This ratio is the
+    only thing Mexico City still contributes to this module (see the
+    module docstring's honesty note): TomTom's Area Analysis trial for
+    Monterrey only covered 24 weekday time sets, so there is no measured
+    Monterrey weekend curve to load.
 
-    Method (auditable, no hand-tuned per-hour numbers):
-      1. Group `Congestion level [%]` by (day_type, hour-of-day) and take
-         the mean of each bucket, using the real 2025-01-01..2025-06-30
-         hourly series.
-      2. Normalize every bucket against the *series' own overall mean*,
-         producing a dimensionless shape curve (1.0 = an average hour in
-         the series; > 1.0 = more congested than average; < 1.0 = less).
-      3. Anchor magnitude to Monterrey: `multiplier = 1.0 + scale *
-         normalized_shape`. At `normalized_shape == 0` this is exactly free
-         flow (1.0); `scale` controls how strongly the real timing/shape
-         swings the multiplier away from free flow.
-
-    This function is not called by `build_traffic_timeline` at runtime (the
-    result is baked into `HOURLY_CONGESTION_MULTIPLIER` below so this
-    module has no hard runtime dependency on `fixtures/raw/`) — it exists
-    so the baked table is independently reproducible and auditable. Re-run
-    it if the source CSV is ever regenerated.
+    Method (auditable, no hand-tuned per-hour numbers): group real
+    `Congestion level [%]` by (day_type, hour-of-day), take each bucket's
+    mean over the full 2025-01-01..2025-06-30 series, and divide the
+    weekend mean by the weekday mean at that same hour, capped above at
+    `max_ratio` (see that constant's comment for why only the upper bound
+    is capped). A ratio of 0.85 at some hour means Mexico City's weekend
+    congestion at that hour runs 85% of its weekday congestion; that same
+    0.85 is what `build_hourly_congestion_multiplier_table` applies to the
+    real Monterrey weekday-over-free-flow amount to produce a weekend
+    number.
     """
     frame = pd.read_csv(csv_path, parse_dates=["Time"])
     frame["hour"] = frame["Time"].dt.hour
     frame["day_type"] = frame["Time"].dt.weekday.apply(lambda d: DayType.WEEKEND if d >= 5 else DayType.WEEKDAY)
-
-    overall_mean = frame["Congestion level [%]"].mean()
     bucket_means = frame.groupby(["day_type", "hour"])["Congestion level [%]"].mean()
 
+    ratio_table: dict[int, float] = {}
+    for hour in range(24):
+        weekday_pct = bucket_means[(DayType.WEEKDAY, hour)]
+        weekend_pct = bucket_means[(DayType.WEEKEND, hour)]
+        ratio_table[hour] = min(weekend_pct / weekday_pct, max_ratio)
+    return ratio_table
+
+
+def build_hourly_congestion_multiplier_table() -> dict[tuple[DayType, int], float]:
+    """Build the full (day_type, hour) -> multiplier table used at runtime.
+
+    - Weekday: the real Monterrey number, unmodified
+      (`load_monterrey_weekday_multiplier_table`).
+    - Weekend: the real Monterrey weekday number reshaped by the Mexico
+      City weekend/weekday ratio, applied to the *amount above free flow*
+      rather than the raw multiplier (so a ratio of 1.0 exactly reproduces
+      the weekday number, and a ratio < 1.0 relaxes the multiplier back
+      toward free flow rather than toward zero):
+
+          weekend(h) = 1.0 + (weekday(h) - 1.0) * ratio(h)
+
+    Loaded fresh (not baked into a hardcoded literal) so this table always
+    reflects whatever is currently on disk in the two small, committed
+    source CSVs — both are cheap to read (24 and 4,344 rows respectively),
+    so there is no performance reason to bake a snapshot, and baking one
+    would risk silently drifting from the CSVs if either is regenerated.
+    """
+    weekday_table = load_monterrey_weekday_multiplier_table()
+    weekend_ratio_table = derive_weekend_weekday_ratio_table_from_csv()
+
     table: dict[tuple[DayType, int], float] = {}
-    for (day_type, hour), bucket_mean in bucket_means.items():
-        normalized_shape = bucket_mean / overall_mean
-        table[(day_type, hour)] = _clamp_min(1.0 + scale * normalized_shape)
+    for hour in range(24):
+        weekday_multiplier = weekday_table[hour]
+        table[(DayType.WEEKDAY, hour)] = weekday_multiplier
+        weekend_multiplier = 1.0 + (weekday_multiplier - 1.0) * weekend_ratio_table[hour]
+        table[(DayType.WEEKEND, hour)] = _clamp_min(weekend_multiplier)
     return table
 
 
-# BAKED, DERIVED TABLE — produced by calling
-# `derive_hourly_multiplier_table_from_csv()` once against
-# `fixtures/raw/tomtom_mexico_city_hourly.csv` (see that function for the
-# exact method). NOT hand-invented: every value below is
-# `round(1.0 + MONTERREY_CONGESTION_SCALE * normalized_shape, 3)` where
-# `normalized_shape` is the real Mexico City (day_type, hour) mean
-# congestion level divided by the real series' overall mean (42.398%).
-# Shape sanity-checked against the source series: weekday trough ~1.00x at
-# 03:00-04:00, weekday morning peak ~1.80x at 08:00, weekday midday dip
-# ~1.52x-1.74x across 11:00-16:00 (lower than either peak), weekday evening
-# peak ~1.84x at 18:00 (higher than the morning peak), tapering to ~1.13x
-# by 23:00; weekend curve flatter and generally lower (max ~1.57x, at
-# 14:00 — an afternoon rather than a sharp commute peak). 1.0 = free flow;
-# e.g. 1.65 means a leg takes 65% longer than free flow.
-HOURLY_CONGESTION_MULTIPLIER: dict[tuple[DayType, int], float] = {
-    # --- Weekday ---
-    (DayType.WEEKDAY, 0): 1.047,
-    (DayType.WEEKDAY, 1): 1.017,
-    (DayType.WEEKDAY, 2): 1.005,
-    (DayType.WEEKDAY, 3): 1.002,
-    (DayType.WEEKDAY, 4): 1.002,
-    (DayType.WEEKDAY, 5): 1.130,
-    (DayType.WEEKDAY, 6): 1.412,
-    (DayType.WEEKDAY, 7): 1.683,  # morning peak ramp
-    (DayType.WEEKDAY, 8): 1.801,  # morning peak
-    (DayType.WEEKDAY, 9): 1.682,
-    (DayType.WEEKDAY, 10): 1.560,
-    (DayType.WEEKDAY, 11): 1.524,  # midday dip
-    (DayType.WEEKDAY, 12): 1.537,
-    (DayType.WEEKDAY, 13): 1.616,
-    (DayType.WEEKDAY, 14): 1.736,
-    (DayType.WEEKDAY, 15): 1.744,
-    (DayType.WEEKDAY, 16): 1.671,  # midday dip ends
-    (DayType.WEEKDAY, 17): 1.703,
-    (DayType.WEEKDAY, 18): 1.842,  # evening peak (higher than morning)
-    (DayType.WEEKDAY, 19): 1.833,
-    (DayType.WEEKDAY, 20): 1.606,
-    (DayType.WEEKDAY, 21): 1.388,
-    (DayType.WEEKDAY, 22): 1.235,
-    (DayType.WEEKDAY, 23): 1.128,
-    # --- Weekend: flatter, generally lower, no sharp commute peaks ---
-    (DayType.WEEKEND, 0): 1.112,
-    (DayType.WEEKEND, 1): 1.068,
-    (DayType.WEEKEND, 2): 1.037,
-    (DayType.WEEKEND, 3): 1.013,
-    (DayType.WEEKEND, 4): 1.003,
-    (DayType.WEEKEND, 5): 1.024,
-    (DayType.WEEKEND, 6): 1.072,
-    (DayType.WEEKEND, 7): 1.129,
-    (DayType.WEEKEND, 8): 1.208,
-    (DayType.WEEKEND, 9): 1.281,
-    (DayType.WEEKEND, 10): 1.341,
-    (DayType.WEEKEND, 11): 1.383,
-    (DayType.WEEKEND, 12): 1.440,
-    (DayType.WEEKEND, 13): 1.522,
-    (DayType.WEEKEND, 14): 1.571,  # modest afternoon social bump
-    (DayType.WEEKEND, 15): 1.529,
-    (DayType.WEEKEND, 16): 1.445,
-    (DayType.WEEKEND, 17): 1.394,
-    (DayType.WEEKEND, 18): 1.392,
-    (DayType.WEEKEND, 19): 1.412,
-    (DayType.WEEKEND, 20): 1.357,
-    (DayType.WEEKEND, 21): 1.278,
-    (DayType.WEEKEND, 22): 1.212,
-    (DayType.WEEKEND, 23): 1.142,
-}
+# Loaded once at import time from the two small source CSVs above (see
+# `build_hourly_congestion_multiplier_table`). Weekday values are real
+# measured Monterrey network speeds; weekend values are those same real
+# weekday values reshaped by the Mexico City weekend/weekday ratio. 1.0 =
+# free flow; e.g. 1.65 means a leg takes 65% longer than free flow.
+HOURLY_CONGESTION_MULTIPLIER: dict[tuple[DayType, int], float] = build_hourly_congestion_multiplier_table()
 
 
 def _baseline_multiplier(day_type: DayType, minute_of_day: int) -> float:
