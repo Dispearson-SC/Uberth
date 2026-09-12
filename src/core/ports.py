@@ -147,7 +147,7 @@ class Observation:
 
     temp_c: Estimate
     apparent_c: Estimate
-    precip_mm: Estimate
+    precip_mm_per_hour: Estimate
 
     # Per-cell travel-time multipliers the courier can estimate for nearby
     # zones. Sparse on purpose: you do not know traffic across the whole city.

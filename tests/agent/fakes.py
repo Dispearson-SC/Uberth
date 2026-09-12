@@ -71,7 +71,7 @@ class FakeRawSource:
         *,
         temp_c: float = 24.0,
         apparent_c: float | None = None,
-        precip_mm: float = 0.0,
+        precip_mm_per_hour: float = 0.0,
         congestion: dict[str, Estimate] | None = None,
         poi_density: dict[str, Estimate] | None = None,
         disruptions: tuple[PerceivedEvent, ...] = (),
@@ -84,7 +84,7 @@ class FakeRawSource:
     ) -> None:
         self._temp_c = temp_c
         self._apparent_c = apparent_c if apparent_c is not None else temp_c + 1.0
-        self._precip_mm = precip_mm
+        self._precip_mm_per_hour = precip_mm_per_hour
         self._congestion = dict(congestion or {})
         self._poi_density = dict(poi_density or {})
         self._disruptions = disruptions
@@ -111,7 +111,7 @@ class FakeRawSource:
         return {
             "temp_c": Estimate(self._temp_c, 0.95, 1.0),
             "apparent_c": Estimate(self._apparent_c, 0.90, 1.0),
-            "precip_mm": Estimate(self._precip_mm, 0.65, 1.0),
+            "precip_mm_per_hour": Estimate(self._precip_mm_per_hour, 0.65, 1.0),
         }
 
     # -- road network ----------------------------------------------------

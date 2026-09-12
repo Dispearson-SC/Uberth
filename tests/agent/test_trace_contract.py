@@ -70,7 +70,7 @@ def random_scenario(rng: random.Random):
         fuel_minutes_remaining=round(rng.uniform(2.0, 200.0), 1),
         offers_seen=rng.randint(1, 60),
         offers_accepted=rng.randint(0, 30),
-        precip_mm=round(rng.choice([0.0, 0.0, 0.4, 3.0]), 1),
+        precip_mm_per_hour=round(rng.choice([0.0, 0.0, 0.4, 3.0]), 1),
     )
 
 

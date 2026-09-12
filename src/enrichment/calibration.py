@@ -29,7 +29,10 @@ WEATHER_NOISE_CALIBRATION: dict[str, float] = {
     # reading is harder to pin to the exact millimetre) plus a small floor
     # so a dry reading is not reported with zero uncertainty.
     "precip_mm_std_fraction": 0.35,
-    "precip_mm_std_floor": 0.03,
+    # Was 0.03 when this noise was applied to a PER-MINUTE value; the agent
+    # is now handed mm/hour, so the same physical floor is 60x that. Renamed
+    # rather than rescaled in place so a stale caller fails loudly.
+    "precip_mm_std_floor_per_hour": 1.8,
     "precip_mm_confidence": 0.65,
     # A weather app is not instantaneous: this is its typical refresh lag.
     "age_minutes": 6.0,

@@ -147,8 +147,12 @@ class RawSourceAdapter:
         weather_tick = self._weather_by_minute.get(minute) or self._weather_by_minute[
             min(self._weather_by_minute)
         ]
-        temp_c, apparent_c, precip_mm = estimate_weather(weather_tick, self._rng)
-        self._weather = {"temp_c": temp_c, "apparent_c": apparent_c, "precip_mm": precip_mm}
+        temp_c, apparent_c, precip_per_hour = estimate_weather(weather_tick, self._rng)
+        self._weather = {
+            "temp_c": temp_c,
+            "apparent_c": apparent_c,
+            "precip_mm_per_hour": precip_per_hour,
+        }
 
         self._congestion = estimate_traffic(
             minute=minute,

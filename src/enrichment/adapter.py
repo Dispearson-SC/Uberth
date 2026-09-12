@@ -98,7 +98,7 @@ class EnrichmentAdapter:
         weather_tick = self._weather_by_minute.get(minute) or self._weather_by_minute[
             min(self._weather_by_minute)
         ]
-        temp_c, apparent_c, precip_mm = estimate_weather(weather_tick, self._rng)
+        temp_c, apparent_c, precip_mm_per_hour = estimate_weather(weather_tick, self._rng)
 
         traffic_by_cell = estimate_traffic(
             minute=minute,
@@ -146,7 +146,7 @@ class EnrichmentAdapter:
             at_cell=courier.cell,
             temp_c=temp_c,
             apparent_c=apparent_c,
-            precip_mm=precip_mm,
+            precip_mm_per_hour=precip_mm_per_hour,
             traffic_by_cell=traffic_by_cell,
             perceived_events=perceived_events,
             kitchen_minutes_by_denue_id=self._kitchen_memory.snapshot(minute),

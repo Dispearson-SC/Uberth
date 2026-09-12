@@ -242,7 +242,9 @@ class SmartPolicy:
 
     name: str = "smart"
 
-    def __init__(self, name: str | None = None, risk_posture: float = 1.0) -> None:
+    def __init__(
+        self, name: str | None = None, risk_posture: float = 1.0, bar_factor: float = 1.0
+    ) -> None:
         """`risk_posture` scales what the courier CHARGES for exposure --
         night kilometres, wet pavement, and riding into believed congestion.
 
@@ -260,6 +262,27 @@ class SmartPolicy:
         if name:
             self.name = name
         self.risk_posture = max(float(risk_posture), 0.0)
+        # How fussy to be, as a multiplier on the reservation price. 1.0 is
+        # the price optimal stopping computes; below 1.0 deliberately
+        # accepts work the bar would refuse.
+        #
+        # This knob exists because the bar is provably INCOMPLETE, not
+        # because it is badly tuned. Rejecting costs the courier the wait
+        # for a better offer -- which the bar prices -- AND a cut in how
+        # many offers the platform shows them at all, which it does not.
+        # Measured from `engine.calibration.acceptance_rate_offer_multiplier`:
+        # at the 19% acceptance rate this policy settles into, the platform
+        # shows it 0.53x the offers it would otherwise see. Half its
+        # opportunity flow, spent without ever appearing in its own
+        # bookkeeping, because the bar is computed from the offers that did
+        # arrive.
+        #
+        # Pricing that feedback properly means solving a fixed point: the
+        # bar sets the acceptance rate, the acceptance rate sets the flow,
+        # the flow sets the value of waiting. Sweeping this factor finds
+        # that optimum empirically instead of asserting it.
+        self.bar_factor = max(float(bar_factor), 0.0)
+        self._last_dry_spell_shrink = 1.0
         self._memory = _ShiftMemory()
 
     # ------------------------------------------------------------------
@@ -305,7 +328,7 @@ class SmartPolicy:
                 window=int(RESERVATION_CALIBRATION["recent_offer_window"]),
             )
 
-        threshold = self._threshold(beliefs, courier, committed_minutes)
+        threshold = self._threshold(beliefs, courier, committed_minutes) * self.bar_factor
 
         feasible = [plan for plan in plans if plan.blocked is None]
         best = max(feasible, key=lambda plan: plan.rate) if feasible else None
@@ -416,6 +439,41 @@ class SmartPolicy:
         if self._memory.offers_scored < RESERVATION_CALIBRATION["min_offers_for_running_mean"]:
             return None
         return 1.0 / self._offers_per_minute(courier)
+
+    def _dry_spell_adjusted_rate(self, courier: CourierSnapshot) -> tuple[float, float]:
+        """The arrival rate to price WAITING with, shrunk by the current dry
+        spell. Returns (rate, shrink_factor) so the trace can show it.
+
+        `_offers_per_minute` is a lifetime average, and its docstring
+        records at length why a recency window is not the fix. This is the
+        narrower correction that is: an empty screen while standing free is
+        a Poisson observation of zero offers over `idle_streak` minutes,
+        and it argues against the believed rate in proportion to how long
+        it has lasted. With the prior treated as worth
+        `dry_spell_prior_offers` offers of evidence, the posterior mean
+        shrinks by tau / (tau + idle), tau being that prior expressed in
+        minutes.
+
+        This is applied ONLY to the bar, never to the dead-minute estimate
+        that shares the same underlying rate. The courier standing still
+        learns that THIS WAIT is worse than they thought; they learn
+        nothing about how long a customer across town will leave them
+        waiting. Conflating the two is what made the earlier recency-window
+        attempt worse on every window.
+
+        The consequence, which is the point: the longer the courier has
+        stood with nothing, the lower the bar, monotonically and without an
+        arbitrary patience limit. A dry spell IS the argument for being
+        less fussy.
+        """
+        base = self._offers_per_minute(courier)
+        idle = float(self._memory.idle_streak_minutes)
+        if idle <= 0.0:
+            return base, 1.0
+        cal = RESERVATION_CALIBRATION
+        tau = float(cal["dry_spell_prior_offers"]) / max(base, 1e-9)
+        shrink = max(tau / (tau + idle), float(cal["dry_spell_min_rate_fraction"]))
+        return base * shrink, shrink
 
     def _offers_per_minute(self, courier: CourierSnapshot) -> float:
         """How often an offer arrives overall, from the courier's own tally.
@@ -651,7 +709,7 @@ class SmartPolicy:
                 ScoreFactor(
                     label="Wet road risk premium",
                     delta_mxn=-rain_cost,
-                    note="%.1f mm of believed rain" % beliefs.precip_mm.value,
+                    note="%.1f mm/h of believed rain" % beliefs.precip_mm_per_hour.value,
                 )
             )
 
@@ -835,7 +893,8 @@ class SmartPolicy:
         if memory.offers_scored < cal["min_offers_for_running_mean"]:
             return cold_start
 
-        arrival_rate = self._offers_per_minute(courier)
+        arrival_rate, dry_spell_shrink = self._dry_spell_adjusted_rate(courier)
+        self._last_dry_spell_shrink = dry_spell_shrink
         # Sorted best-first, so the first k entries are exactly the offers a
         # bar set at the k-th rate would have accepted.
         ranked = sorted(memory.scored, key=lambda item: item[0], reverse=True)

@@ -174,7 +174,7 @@ def make_sources(
     events: tuple[PerceivedEvent, ...] = (),
     eta_bias: dict[str, Estimate] | None = None,
     travel_correction: Estimate | None = None,
-    precip_mm: float = 0.0,
+    precip_mm_per_hour: float = 0.0,
     temp_c: float = 24.0,
     cell_coords: dict[str, tuple[float, float]] | None = None,
 ) -> FakeRawSource:
@@ -200,7 +200,7 @@ def make_sources(
         }
     return FakeRawSource(
         temp_c=temp_c,
-        precip_mm=precip_mm,
+        precip_mm_per_hour=precip_mm_per_hour,
         congestion={c: sure(v, traffic_confidence) for c, v in traffic.items()},
         poi_density={
             c: Estimate(value=v, confidence=density_confidence, age_minutes=0.0)
@@ -268,7 +268,7 @@ def scenario(
     offers_seen: int = 20,
     offers_accepted: int = 14,
     heat_levels: dict[str, int] | None = None,
-    precip_mm: float = 0.0,
+    precip_mm_per_hour: float = 0.0,
     cell_coords: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[PlatformView, FakeRawSource, CourierSnapshot]:
     """The three arguments `Policy.decide` takes, consistently built.
@@ -299,7 +299,7 @@ def scenario(
         events=events,
         eta_bias=eta_bias,
         travel_correction=travel_correction,
-        precip_mm=precip_mm,
+        precip_mm_per_hour=precip_mm_per_hour,
         cell_coords=cell_coords,
     )
     return view, sources, courier

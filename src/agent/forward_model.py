@@ -96,7 +96,7 @@ class ForwardModel:
 
     @property
     def rain_multiplier(self) -> float:
-        precip = max(0.0, self._beliefs.precip_mm.value)
+        precip = max(0.0, self._beliefs.precip_mm_per_hour.value)
         return min(
             TRAVEL_CALIBRATION["max_rain_multiplier"],
             1.0 + precip * TRAVEL_CALIBRATION["rain_slowdown_per_mm"],
@@ -129,7 +129,7 @@ class ForwardModel:
 
     def rain_risk_factor(self) -> float:
         return ramp(
-            max(0.0, self._beliefs.precip_mm.value),
+            max(0.0, self._beliefs.precip_mm_per_hour.value),
             0.0,
             SAFETY_CALIBRATION["rain_risk_full_mm"],
         )

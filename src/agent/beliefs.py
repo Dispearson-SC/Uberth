@@ -93,7 +93,7 @@ class BeliefState:
 
     temp_c: Estimate
     apparent_c: Estimate
-    precip_mm: Estimate
+    precip_mm_per_hour: Estimate
 
     # Per-cell travel-time multipliers, as sparse as the courier's traffic
     # app actually is. Nobody knows congestion across a whole city.
@@ -155,7 +155,7 @@ class BeliefState:
             at_cell=courier.cell,
             temp_c=weather["temp_c"],
             apparent_c=weather["apparent_c"],
-            precip_mm=weather["precip_mm"],
+            precip_mm_per_hour=weather["precip_mm_per_hour"],
             traffic_by_cell=traffic,
             perceived_events=events,
             demand_by_cell=demand,

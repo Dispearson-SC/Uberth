@@ -263,6 +263,29 @@ SHIFT_CALIBRATION: dict[str, float] = {
 # in one term.
 # --------------------------------------------------------------------------
 RESERVATION_CALIBRATION: dict[str, float] = {
+    # --- the dry spell ---
+    # How much evidence the lifetime arrival rate is worth, measured in
+    # OFFERS, when a dry spell argues against it. Standing free with an
+    # empty screen is not neutral: if the courier believes offers arrive
+    # every eight minutes and twenty minutes pass with nothing, those
+    # twenty minutes are evidence the belief is wrong. Treating the prior
+    # as worth three offers and the silence as a Poisson observation of
+    # zero, the posterior rate shrinks by tau / (tau + idle), where tau is
+    # this many offers divided by the believed rate.
+    #
+    # Why it goes HERE and not into `_offers_per_minute`: that rate has two
+    # consumers. One prices the wait for a better offer (the bar); the
+    # other prices the dead minutes a destination will cost. A dry spell
+    # where the courier is STANDING is evidence about the first and not the
+    # second, and conflating them is exactly why the earlier
+    # recency-windowed rate measured worse across every window. The two
+    # uses had to be decoupled, and this is the decoupling.
+    "dry_spell_prior_offers": 3.0,
+    # Never let the bar collapse to nothing: at some point a courier is
+    # accepting work that loses money, and a shrinking bar must not be
+    # allowed to argue for that.
+    "dry_spell_min_rate_fraction": 0.25,
+
     # How many recent offers the value distribution is built from. The flow
     # at 21:00 is not the flow at 14:00, so a bar built from the whole shift
     # would keep arguing with a lunchtime that is over.
