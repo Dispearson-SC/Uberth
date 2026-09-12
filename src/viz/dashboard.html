@@ -225,7 +225,8 @@
   }
   button:hover { border-color: var(--accent-smart); }
   #playBtn { min-width: 74px; font-weight: 700; }
-  #scenarioBtn { margin-left: auto; }
+  #metricsBtn { margin-left: auto; }
+  #scenarioBtn { margin-left: 8px; }
   #scenarioBtn.active { background: rgba(255,120,80,0.2); border-color: #ff7850; color: #ff7850; }
   #forkBtn:disabled { opacity: 0.35; cursor: not-allowed; }
   #forkBtn { margin-left: 8px; }
@@ -254,6 +255,88 @@
   #fileStatus .ok { color: var(--good); }
   #fileStatus .missing { color: var(--text-dim); }
   #loadErr { color: var(--bad); font-size: 12px; margin-top: 8px; min-height: 1em; }
+  /* ===== Metrics modal: the full read, over the map ===== */
+  #metricsOverlay {
+    position: fixed; inset: 0; z-index: 3000; display: none;
+    background: rgba(5,8,14,0.82); backdrop-filter: blur(3px);
+  }
+  #metricsOverlay.open { display: block; }
+  #metricsCard {
+    position: absolute; inset: 24px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px;
+    display: flex; flex-direction: column; overflow: hidden;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.55);
+  }
+  #metricsHead {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    background: var(--panel-2);
+  }
+  #metricsHead h2 { margin: 0; font-size: 15px; letter-spacing: 0.02em; }
+  #metricsHead .sub { font-size: 12px; color: var(--text-dim); }
+  #metricsClose {
+    margin-left: auto; background: transparent; border: 1px solid var(--border);
+    color: var(--text-dim); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+    font-size: 12px;
+  }
+  #metricsClose:hover { color: var(--text); border-color: var(--text-dim); }
+  #metricsBody { flex: 1 1 auto; overflow: auto; padding: 16px 18px 22px; }
+  .metrics-lanes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 1000px) { .metrics-lanes { grid-template-columns: 1fr; } }
+  .metrics-lane {
+    border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
+    overflow: hidden;
+  }
+  .metrics-lane > .lane-head {
+    padding: 9px 12px; border-bottom: 1px solid var(--border);
+    font-size: 12px; font-weight: 600; letter-spacing: 0.04em;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .mgroup { border-top: 1px solid var(--border); padding: 9px 12px 11px; }
+  .mgroup:first-of-type { border-top: none; }
+  .mgroup h4 {
+    margin: 0 0 7px; font-size: 10px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--text-dim); font-weight: 600;
+  }
+  .mrow {
+    display: flex; align-items: baseline; gap: 8px; padding: 2px 0;
+    font-size: 12px; line-height: 1.5;
+  }
+  .mrow .k { color: var(--text-dim); flex: 1 1 auto; }
+  .mrow .v { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+  .mrow .v.km { color: var(--accent-fixed); }
+  .mrow .v.good { color: var(--good); }
+  .mrow .v.bad { color: var(--bad); }
+  .mrow.headline { font-size: 13px; }
+  .mrow.headline .k { color: var(--text); }
+  .mnote {
+    margin-top: 6px; font-size: 10.5px; line-height: 1.45; color: var(--text-dim);
+    border-left: 2px solid var(--border); padding-left: 8px;
+  }
+  .tbar { height: 7px; border-radius: 3px; display: flex; overflow: hidden; margin: 4px 0 7px; }
+  .tbar span { display: block; height: 100%; }
+  .tlegend { display: flex; flex-wrap: wrap; gap: 9px; font-size: 10.5px; color: var(--text-dim); }
+  .tlegend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+  .mtable-wrap { margin-top: 16px; }
+  .mtable-wrap h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 0.03em; }
+  .mtable { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  .mtable th, .mtable td {
+    padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .mtable th {
+    position: sticky; top: 0; background: var(--panel-2); color: var(--text-dim);
+    font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600;
+    text-align: right; z-index: 1;
+  }
+  .mtable th:first-child, .mtable td:first-child,
+  .mtable th:nth-child(2), .mtable td:nth-child(2) { text-align: left; }
+  .mtable td.order { color: var(--text-dim); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .mtable tbody tr:hover { background: rgba(255,255,255,0.035); }
+  .mtable .surge { color: var(--accent-fork); }
+  .mtable-scroll { max-height: 280px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .mempty { padding: 14px; color: var(--text-dim); font-size: 12px; font-style: italic; }
+  #metricsBtn.active { background: rgba(77,163,255,0.18); border-color: var(--accent-smart); color: var(--accent-smart); }
 </style>
 </head>
 <body>
@@ -304,6 +387,9 @@
         <option value="50">50x</option>
       </select>
       <span id="eventTicker"></span>
+      <button id="metricsBtn" title="Open the full metric read for both couriers over the map (M)">
+        &#128202; Metrics
+      </button>
       <button id="scenarioBtn" title="Swap both couriers into the harshest working day in the weather archive: 41.9 C, rain in the dinner peak, five street closures">
         &#127786; Hostile day
       </button>
@@ -311,6 +397,17 @@
         &#9889; Fork: inject street closure
       </button>
     </div>
+  </div>
+</div>
+
+<div id="metricsOverlay">
+  <div id="metricsCard">
+    <div id="metricsHead">
+      <h2>Metrics &mdash; both couriers, same world</h2>
+      <span class="sub" id="metricsSub"></span>
+      <button id="metricsClose">Close &nbsp;esc</button>
+    </div>
+    <div id="metricsBody"></div>
   </div>
 </div>
 
@@ -1072,6 +1169,9 @@
   }
 
   function renderAll() {
+    // The modal reads "as of the current minute", so it has to move with the
+    // scrub rather than freeze at whatever minute it was opened on.
+    renderMetrics();
     document.getElementById("scrub").value = Math.round(app.currentMinute);
     document.getElementById("minuteLabel").textContent =
       fmtMinute(app.currentMinute) + "  (t=" + Math.round(app.currentMinute) + ")";
@@ -1119,6 +1219,21 @@
       renderAll();
     });
 
+    document.getElementById("metricsBtn").addEventListener("click", () => {
+      setMetricsOpen(!document.getElementById("metricsOverlay").classList.contains("open"));
+    });
+    document.getElementById("metricsClose").addEventListener("click", () => setMetricsOpen(false));
+    document.getElementById("metricsOverlay").addEventListener("click", e => {
+      // Click the backdrop to dismiss, but never a click inside the card.
+      if (e.target.id === "metricsOverlay") setMetricsOpen(false);
+    });
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape") setMetricsOpen(false);
+      else if ((e.key === "m" || e.key === "M") && e.target === document.body) {
+        setMetricsOpen(!document.getElementById("metricsOverlay").classList.contains("open"));
+      }
+    });
+
     const scenarioBtn = document.getElementById("scenarioBtn");
     if (!hasDuel()) {
       // No duel recorded. Hide the control rather than offer a dead button.
@@ -1143,6 +1258,248 @@
         renderAll();
       });
     }
+  }
+
+  // ==========================================================================
+  // 5b. Metrics modal — the full read, over the map
+  // ==========================================================================
+
+  // What a kilometre costs the courier in fuel and wear. This is the AGENT'S
+  // OWN cost model (src/agent/calibration.py: fuel_cost_per_km_mxn), not
+  // something the world measured: the simulator charges fuel in TIME, as a
+  // 10-minute refuel stop when the 240-minute tank runs dry, and never in
+  // pesos. It is shown here because a courier's real take-home is net of it,
+  // and it is labelled as a model constant everywhere it appears so nobody
+  // quotes it as a measurement.
+  const WEAR_MXN_PER_KM = 1.10;
+
+  const ACTIVITY_ORDER = [
+    ["to_restaurant", "To restaurant", "#4da3ff"],
+    ["waiting_kitchen", "Kitchen wait", "#ffcc4d"],
+    ["to_customer", "To customer", "#3ddc84"],
+    ["repositioning", "Repositioning", "#b06bff"],
+    ["refuelling", "Refuelling", "#ff5d6c"],
+    ["idle", "Idle", "#4a5568"],
+  ];
+
+  function laneMetrics(doc, uptoMinute) {
+    const frames = doc.frames.filter(f => f.minute <= uptoMinute);
+    const trips = doc._trips.filter(t => t.delivered_at_min <= uptoMinute);
+    const last = frames.length ? frames[frames.length - 1].couriers[0] : null;
+
+    const activity = {};
+    let refuelStops = 0, prevActivity = null;
+    const rejections = {};
+    let offersScored = 0, accepted = 0, rejected = 0;
+    for (const f of frames) {
+      const c = f.couriers[0];
+      activity[c.activity] = (activity[c.activity] || 0) + 1;
+      if (c.activity === "refuelling" && prevActivity !== "refuelling") refuelStops++;
+      prevActivity = c.activity;
+      for (const d of (f.decisions || [])) {
+        if (d.action === "accept") accepted++;
+        if (d.action === "reject") rejected++;
+        for (const o of ((d.trace || {}).considered || [])) {
+          offersScored++;
+          if (o.rejected_because) {
+            // Group by shape, not by the exact sentence: every "below my bar"
+            // line carries its own numbers and would otherwise be unique.
+            const why = o.rejected_because;
+            // Both policies phrase refusals differently and BOTH must be
+            // covered: the smart agent says "below my 31 bar" (a rate), the
+            // payout floor says "21 MXN is under my 55 MXN floor" (a
+            // payout). Matching only the agent's wording filed every one of
+            // the baseline's refusals under "Other", which made the
+            // baseline look like it refused for no stated reason.
+            const key = /below my .* bar/.test(why) ? "Below the rate bar"
+              : /under my .* floor/.test(why) ? "Under the payout floor"
+              : /ride home/.test(why) ? "Ride home does not fit"
+              : /shift remain/.test(why) ? "Does not fit before shift end"
+              : /fuel/.test(why) ? "Not enough fuel"
+              : "Other";
+            rejections[key] = (rejections[key] || 0) + 1;
+          }
+        }
+      }
+    }
+
+    const payout = trips.reduce((s, t) => s + t.payout_mxn, 0);
+    const tips = trips.reduce((s, t) => s + t.tip_mxn, 0);
+    const takeHome = payout + tips;
+    const paidKm = trips.reduce((s, t) => s + t.km, 0);
+    const drivenKm = last ? last.km_traveled : 0;
+    const unpaidKm = Math.max(drivenKm - paidKm, 0);
+    const minutes = last ? last.minutes_elapsed : 0;
+    const hours = minutes / 60;
+    const wear = drivenKm * WEAR_MXN_PER_KM;
+    const surgeTrips = trips.filter(t => t.surge_locked > 1.0);
+    const committed = trips.map(t => Math.max(t.delivered_at_min - t.accepted_at_min, t.minutes));
+
+    const mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0;
+    return {
+      trips, minutes, hours, takeHome, payout, tips, paidKm, drivenKm, unpaidKm,
+      wear, activity, refuelStops, rejections, offersScored, accepted, rejected,
+      perTrip: trips.length ? takeHome / trips.length : 0,
+      mxnPerHour: hours ? takeHome / hours : 0,
+      netPerHour: hours ? (takeHome - wear) / hours : 0,
+      mxnPerDrivenKm: drivenKm ? takeHome / drivenKm : 0,
+      mxnPerPaidKm: paidKm ? takeHome / paidKm : 0,
+      unpaidShare: drivenKm ? unpaidKm / drivenKm * 100 : 0,
+      kmPerTrip: trips.length ? drivenKm / trips.length : 0,
+      deliveriesPerHour: hours ? trips.length / hours : 0,
+      idlePct: minutes ? (activity.idle || 0) / minutes * 100 : 0,
+      meanCommitted: mean(committed),
+      meanKitchen: mean(trips.map(t => t.kitchen_wait_minutes)),
+      meanPaidKm: mean(trips.map(t => t.km)),
+      acceptPct: (accepted + rejected) ? accepted / (accepted + rejected) * 100 : 0,
+      surgeCount: surgeTrips.length,
+      surgeMean: mean(surgeTrips.map(t => t.surge_locked)),
+    };
+  }
+
+  function mrow(k, v, cls, headline) {
+    return `<div class="mrow${headline ? " headline" : ""}"><span class="k">${k}</span>` +
+      `<span class="v${cls ? " " + cls : ""}">${v}</span></div>`;
+  }
+
+  function timeBarHTML(m) {
+    const total = m.minutes || 1;
+    const bars = ACTIVITY_ORDER
+      .filter(([key]) => m.activity[key])
+      .map(([key, , color]) => `<span style="width:${m.activity[key] / total * 100}%;background:${color}"></span>`)
+      .join("");
+    const legend = ACTIVITY_ORDER
+      .filter(([key]) => m.activity[key])
+      .map(([key, label, color]) =>
+        `<span><i style="background:${color}"></i>${label} ${Math.round(m.activity[key])}m` +
+        ` (${(m.activity[key] / total * 100).toFixed(0)}%)</span>`)
+      .join("");
+    return `<div class="tbar">${bars}</div><div class="tlegend">${legend}</div>`;
+  }
+
+  function laneMetricsHTML(lane, m) {
+    const rej = Object.entries(m.rejections).sort((a, b) => b[1] - a[1]);
+    return `
+      <div class="metrics-lane">
+        <div class="lane-head"><span class="swatch" style="background:${lane.color}"></span>${lane.label}</div>
+
+        <div class="mgroup">
+          <h4>Money</h4>
+          ${mrow("Take-home (payout + tips)", `${m.takeHome.toFixed(0)} MXN`, "", true)}
+          ${mrow("Payout", `${m.payout.toFixed(0)} MXN`)}
+          ${mrow("Tips", `${m.tips.toFixed(0)} MXN`)}
+          ${mrow("Average per trip taken", `${m.perTrip.toFixed(2)} MXN`)}
+          ${mrow("Per hour", `${m.mxnPerHour.toFixed(1)} MXN/h`, "", true)}
+          ${mrow("Per hour, net of wear", `${m.netPerHour.toFixed(1)} MXN/h`)}
+          ${mrow("Surge trips captured", m.surgeCount ? `${m.surgeCount} at ${m.surgeMean.toFixed(2)}x avg` : "none")}
+        </div>
+
+        <div class="mgroup">
+          <h4>Distance</h4>
+          ${mrow("Per kilometre DRIVEN", `${m.mxnPerDrivenKm.toFixed(2)} MXN/km`, "km", true)}
+          ${mrow("Per kilometre PAID", `${m.mxnPerPaidKm.toFixed(2)} MXN/km`, "km")}
+          ${mrow("Driven", `${m.drivenKm.toFixed(1)} km`, "km")}
+          ${mrow("Paid (restaurant to customer)", `${m.paidKm.toFixed(1)} km`)}
+          ${mrow("Unpaid (nobody pays for this)", `${m.unpaidKm.toFixed(1)} km — ${m.unpaidShare.toFixed(0)}%`, "bad")}
+          ${mrow("Driven per trip", `${m.kmPerTrip.toFixed(2)} km`)}
+          <div class="mnote">Paid distance is the delivery leg only. The gap is
+            the ride TO the restaurant plus repositioning — real fuel, real wear,
+            no payout.</div>
+        </div>
+
+        <div class="mgroup">
+          <h4>Vehicle wear</h4>
+          ${mrow(`Fuel and wear at ${WEAR_MXN_PER_KM.toFixed(2)} MXN/km`, `${m.wear.toFixed(0)} MXN`, "bad")}
+          ${mrow("Share of take-home", m.takeHome ? `${(m.wear / m.takeHome * 100).toFixed(0)}%` : "—", "bad")}
+          ${mrow("Refuel stops", `${m.refuelStops} — ${Math.round(m.activity.refuelling || 0)} min lost`)}
+          <div class="mnote">The cost per km is the AGENT'S cost model, not a
+            world measurement: this simulator charges fuel in TIME — a 10-minute
+            stop when the 240-minute tank runs dry — never in pesos. Shown
+            because take-home is not what the courier keeps.</div>
+        </div>
+
+        <div class="mgroup">
+          <h4>Where the shift went — ${Math.round(m.minutes)} min</h4>
+          ${timeBarHTML(m)}
+          ${mrow("Deliveries", `${m.trips.length} — ${m.deliveriesPerHour.toFixed(2)}/h`)}
+          ${mrow("Average committed per trip", `${m.meanCommitted.toFixed(0)} min`)}
+          ${mrow("Average kitchen wait", `${m.meanKitchen.toFixed(1)} min`)}
+          ${mrow("Average paid leg", `${m.meanPaidKm.toFixed(2)} km`)}
+        </div>
+
+        <div class="mgroup">
+          <h4>Offers</h4>
+          ${mrow("Seen on screen", `${m.offersScored}`)}
+          ${mrow("Accepted / rejected", `${m.accepted} / ${m.rejected}`)}
+          ${mrow("Acceptance rate", `${m.acceptPct.toFixed(0)}%`,
+            m.acceptPct < 40 ? "bad" : "good")}
+          ${rej.length
+            ? rej.map(([why, n]) => mrow(`— ${why}`, `${n}`)).join("")
+            : `<div class="mnote">No refusal carried a reason this far into the shift.</div>`}
+          ${m.acceptPct < 40 ? `<div class="mnote">Below 40% the platform starts
+            showing fewer offers — measured at 0.53x the flow at a 19% rate. That
+            cost does not appear in any figure above it.</div>` : ""}
+        </div>
+      </div>`;
+  }
+
+  function tripTableHTML(lane, m) {
+    if (!m.trips.length) {
+      return `<div class="mtable-wrap"><h3>${lane.label} — trips</h3>
+        <div class="mempty">No deliveries completed yet this shift.</div></div>`;
+    }
+    const rows = m.trips.slice().reverse().map(t => {
+      const committed = Math.max(t.delivered_at_min - t.accepted_at_min, t.minutes);
+      const take = t.payout_mxn + t.tip_mxn;
+      const rate = committed > 0 ? take / (committed / 60) : 0;
+      return `<tr>
+        <td>${fmtMinute(t.delivered_at_min)}</td>
+        <td class="order">${t.order_id}</td>
+        <td>${take.toFixed(2)}</td>
+        <td>${t.payout_mxn.toFixed(2)}</td>
+        <td>${t.tip_mxn.toFixed(2)}</td>
+        <td class="${t.surge_locked > 1 ? "surge" : ""}">${t.surge_locked.toFixed(2)}x</td>
+        <td>${t.km.toFixed(2)}</td>
+        <td>${committed.toFixed(0)}</td>
+        <td>${t.minutes.toFixed(1)}</td>
+        <td>${t.kitchen_wait_minutes.toFixed(1)}</td>
+        <td>${rate.toFixed(0)}</td>
+        <td>${(take / Math.max(t.km, 1e-9)).toFixed(2)}</td>
+      </tr>`;
+    }).join("");
+    return `<div class="mtable-wrap">
+      <h3><span class="swatch" style="background:${lane.color}"></span> ${lane.label} — ${m.trips.length} trips</h3>
+      <div class="mtable-scroll"><table class="mtable">
+        <thead><tr>
+          <th>Done</th><th>Order</th><th>Take</th><th>Payout</th><th>Tip</th>
+          <th>Surge</th><th>Paid km</th><th>Committed</th><th>Riding</th>
+          <th>Kitchen</th><th>MXN/h</th><th>MXN/paid km</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </div>`;
+  }
+
+  function renderMetrics() {
+    const overlay = document.getElementById("metricsOverlay");
+    if (!overlay.classList.contains("open")) return;
+    const lanes = [
+      { doc: laneADoc(), color: LANE_COLORS[laneAKey()], label: LANE_LABELS[laneAKey()] },
+      { doc: laneBDoc(), color: LANE_COLORS[laneBKey()], label: LANE_LABELS[laneBKey()] },
+    ];
+    const metrics = lanes.map(l => laneMetrics(l.doc, app.currentMinute));
+    document.getElementById("metricsSub").textContent =
+      `as of ${fmtMinute(Math.floor(app.currentMinute))} — everything below counts only what has happened by this minute`;
+    document.getElementById("metricsBody").innerHTML =
+      `<div class="metrics-lanes">${lanes.map((l, i) => laneMetricsHTML(l, metrics[i])).join("")}</div>` +
+      lanes.map((l, i) => tripTableHTML(l, metrics[i])).join("");
+  }
+
+  function setMetricsOpen(open) {
+    const overlay = document.getElementById("metricsOverlay");
+    overlay.classList.toggle("open", open);
+    document.getElementById("metricsBtn").classList.toggle("active", open);
+    if (open) { setPlaying(false); renderMetrics(); }
   }
 
   // ==========================================================================

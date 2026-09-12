@@ -242,8 +242,32 @@ class SmartPolicy:
 
     name: str = "smart"
 
+    # Measured default, chosen by the user from an ablation rather than
+    # assumed. Six seeds on the ordinary day, tips included:
+    #
+    #   posture 1.0   88.9 MXN/h   8.61 MXN/km   72% of the payout floor
+    #   posture 0.35  97.8 MXN/h   8.38 MXN/km   80%
+    #   posture 0.0   98.6 MXN/h   8.15 MXN/km   80%
+    #
+    # 1.0 is measurably expensive: it costs 9.7 MXN/h against charging
+    # nothing for exposure, and that effect is large enough to survive the
+    # per-seed noise. It is also, uncomfortably, the setting that maximises
+    # pesos-per-kilometre -- the very figure this project quotes as its
+    # headline -- so adopting it would have meant picking the configuration
+    # that flatters the metric.
+    #
+    # 0.35 against 0.0 is NOT resolved by six seeds: 0.8% on MXN/h and 2.8%
+    # per km both sit inside the noise. It was chosen on a stated,
+    # non-numeric ground: at no measured cost it keeps the exposure
+    # premiums visible in the DecisionTrace, so a courier reading the
+    # reasoning can see the jam and the heat being priced.
+    DEFAULT_RISK_POSTURE = 0.35
+
     def __init__(
-        self, name: str | None = None, risk_posture: float = 1.0, bar_factor: float = 1.0
+        self,
+        name: str | None = None,
+        risk_posture: float = DEFAULT_RISK_POSTURE,
+        bar_factor: float = 1.0,
     ) -> None:
         """`risk_posture` scales what the courier CHARGES for exposure --
         night kilometres, wet pavement, and riding into believed congestion.
