@@ -10,3 +10,4 @@ cache/
 fixtures/raw/*.graphml
 *.tmp.*
 *.py.tmp*
+fixtures/raw/tomtom_monterrey_areaanalysis.json

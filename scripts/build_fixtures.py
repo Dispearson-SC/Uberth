@@ -3,14 +3,18 @@
 Stages (each idempotent — skips work whose output already exists unless
 --force is passed):
 
-    denue   parse DENUE, filter to food-preparation SCIAN codes (7225*) in
-            the 4 target municipalities, compute demand weight -> restaurants.parquet
-    ageb    parse INEGI Census 2020 AGEB population, derive AGEB centroids
-            from DENUE coordinates, aggregate to H3 cells -> population.parquet
-    cells   build the H3 res-7 operating grid from the restaurant point cloud -> cells.parquet
-    graph   download/cache the OSMnx drive graph for the operating polygon -> monterrey_graph.graphml
-    matrix  precompute the cell-to-cell distance/time matrices -> travel_matrix.npz
-    all     run every stage above, in dependency order
+    denue       parse DENUE, filter to food-preparation SCIAN codes (7225*) in
+                the 4 target municipalities, compute demand weight -> restaurants.parquet
+    ageb        parse INEGI Census 2020 AGEB population, derive AGEB centroids
+                from DENUE coordinates, aggregate to H3 cells -> population.parquet
+    workplaces  parse DENUE, filter to office/institutional SCIAN sectors (51-56,
+                61, 62, 93) in the 4 target municipalities, estimate employment
+                from per_ocu strata and weight by delivery propensity, aggregate
+                to H3 cells -> workplaces.parquet
+    cells       build the H3 res-7 operating grid from the restaurant point cloud -> cells.parquet
+    graph       download/cache the OSMnx drive graph for the operating polygon -> monterrey_graph.graphml
+    matrix      precompute the cell-to-cell distance/time matrices -> travel_matrix.npz
+    all         run every stage above, in dependency order
 
 Usage:
     python scripts/build_fixtures.py denue
@@ -44,6 +48,7 @@ AGEB_PATH = PROJECT_ROOT / "Docs/ageb_mza_urbana_19_cpv2020/conjunto_de_datos/co
 
 RESTAURANTS_OUTPUT = FIXTURES_DIR / "restaurants.parquet"
 POPULATION_OUTPUT = FIXTURES_DIR / "population.parquet"
+WORKPLACES_OUTPUT = FIXTURES_DIR / "workplaces.parquet"
 
 FOOD_SCIAN_PREFIX = "7225"
 
@@ -103,6 +108,143 @@ EXPECTED_AGEB_STATS: dict[str, tuple[int, int]] = {
 }
 EXPECTED_TOTAL_AGEBS = 900
 EXPECTED_TOTAL_POPULATION = 2_330_207
+
+
+# --- workplaces: SCIAN sectors, ESTIMATED employment, delivery propensity ---
+
+# Two-digit SCIAN sectors counted as "workplace employment" for lunch-hour
+# office delivery demand: professional/scientific/technical (54), corporate
+# offices (55), finance/insurance (52), mass media information (51), business
+# support (56), real estate (53), government (93), health (62), education
+# (61). This is a curated subset of all SCIAN sectors, not "everyone who
+# works" — manufacturing, retail, construction etc. are excluded because they
+# are not office/institutional lunch-delivery destinations in the same way.
+WORKPLACE_SECTOR_PREFIXES: frozenset[str] = frozenset({"51", "52", "53", "54", "55", "56", "61", "62", "93"})
+
+SECTOR_LABELS: dict[str, str] = {
+    "51": "Mass media information",
+    "52": "Finance and insurance",
+    "53": "Real estate",
+    "54": "Professional/scientific/technical",
+    "55": "Corporate offices",
+    "56": "Business support",
+    "61": "Education",
+    "62": "Health",
+    "93": "Government",
+}
+
+# ESTIMATE, not measured headcount: midpoint headcount per INEGI `per_ocu`
+# stratum, used to estimate raw employment per establishment. Deliberately
+# different from `PER_OCU_MIDPOINT` above (that one feeds a sqrt-weighted
+# restaurant demand proxy; this one is a literal headcount point-estimate).
+# These are the strata midpoints given in the task brief.
+WORKPLACE_PER_OCU_MIDPOINT: dict[str, float] = {
+    "0 a 5 personas": 3.0,
+    "6 a 10 personas": 8.0,
+    "11 a 30 personas": 20.0,
+    "31 a 50 personas": 40.0,
+    "51 a 100 personas": 75.0,
+    "101 a 250 personas": 175.0,
+    "251 y más personas": 400.0,
+}
+DEFAULT_WORKPLACE_PER_OCU_MIDPOINT = WORKPLACE_PER_OCU_MIDPOINT["0 a 5 personas"]
+
+# CALIBRATION / DOMAIN JUDGEMENT (not measured): how much food-delivery
+# demand a sector's workers actually generate per estimated employee,
+# relative to a corporate-office baseline of 1.0. Raw employment would make
+# education (61, the single largest employment block) the biggest lunch
+# destination in the city, which is not plausible — teachers do not order
+# delivery at the rate of a corporate floor. These are 2-digit SECTOR
+# DEFAULTS, applied when no more specific `ACTIVITY_DELIVERY_PROPENSITY`
+# override matches (see below).
+SECTOR_DELIVERY_PROPENSITY: dict[str, float] = {
+    "54": 1.0,  # professional/scientific/technical: office floors, ordinary lunch delivery
+    "55": 1.0,  # corporate offices: same profile as 54
+    "52": 1.0,  # finance/insurance: same profile as 54
+    "51": 0.9,  # mass media: newsroom/studio staff, slightly less deskbound than 54/55
+    "56": 0.8,  # business support: HETEROGENEOUS sector, see ACTIVITY overrides below
+    "53": 0.7,  # real estate: smaller offices, more field time (showings)
+    "93": 0.6,  # government: offices exist but often have subsidized/on-site cafeterias
+    "62": 0.5,  # health: many workers are clinical staff, not desk-bound office lunch buyers
+    "61": 0.25,  # education: teachers/staff, lowest office-lunch-delivery propensity
+}
+DEFAULT_SECTOR_DELIVERY_PROPENSITY = 0.5
+
+# ACTIVITY-LEVEL OVERRIDES (domain judgement, not measured): 2-digit SCIAN
+# sectors are heterogeneous — sector 56 "business support" is the worked
+# example. Broken down for the 4 target municipalities from the real DENUE
+# file, sector 56's 56,565 estimated employees split very unevenly:
+#   5616 security/custody       16,637  (posted at CLIENT sites, mobile)
+#   5614 secretarial support    10,602  (includes 561422 call centres, 7,342)
+#   5613 permanent staffing      9,103  (workers are NOT at the registered address)
+#   5617 pest control            7,326  (mobile outdoor work)
+#   5615 travel agencies         2,379
+#   5611 business administration 6,310
+#   5619 other business support  1,426
+#   562x waste management        1,973
+# A flat sector-56 rate is wrong in both directions: it would weight
+# security guards and exterminators like office workers, while burying the
+# real call-centre signal (561422: 54 establishments, 7,342 workers, ~136
+# per site — a large BPO floor with a young workforce and fixed shift
+# breaks is one of the strongest delivery-demand profiles in the metro).
+#
+# Keys are SCIAN prefixes of any length (2, 4, or 6 digits). Lookup is
+# LONGEST-PREFIX-MATCH: the most specific matching key wins, falling back to
+# `SECTOR_DELIVERY_PROPENSITY`'s 2-digit default when nothing here matches.
+# This is the same mechanism that would let sector 62 (health) be refined
+# later if it is ever time-gated by shift/occupation.
+ACTIVITY_DELIVERY_PROPENSITY: dict[str, float] = {
+    "561422": 1.2,  # call centres / telemarketing: concentrated young workforce, fixed break windows
+    "5616": 0.2,  # security and protective services: posted off-site at client premises
+    "5617": 0.2,  # pest control and extermination: mobile outdoor work
+    "5613": 0.2,  # permanent staffing supply: registered address is an office, workers are elsewhere
+}
+
+# Data-integrity reference counts (see task brief): estimated from the real
+# DENUE file for the 4 target municipalities, using the midpoints above.
+# NOT calibration — this MUST reproduce against the real file, or the
+# sector filter has silently regressed.
+EXPECTED_WORKPLACE_TOTAL_ESTABLISHMENTS = 24_471
+EXPECTED_WORKPLACE_TOTAL_EMPLOYMENT = 367_068
+
+# Informational (soft) per-sector reference for the printed summary table —
+# not hard-asserted, since sector-level counts are more sensitive to exact
+# row-level edge cases than the grand total.
+EXPECTED_WORKPLACE_SECTOR_STATS: dict[str, tuple[int, int]] = {
+    "61": (3_566, 80_424),
+    "62": (8_508, 60_808),
+    "54": (4_456, 59_714),
+    "56": (1_933, 56_565),
+    "52": (2_031, 40_667),
+    "93": (809, 31_209),
+    "53": (2_521, 21_270),
+    "51": (583, 12_607),
+    "55": (64, 3_804),
+}
+
+
+def estimate_workplace_employment(per_ocu: str) -> float:
+    """ESTIMATE (not measured): headcount from the INEGI `per_ocu` stratum
+    midpoint. See `WORKPLACE_PER_OCU_MIDPOINT` for the strata table."""
+    return WORKPLACE_PER_OCU_MIDPOINT.get(per_ocu, DEFAULT_WORKPLACE_PER_OCU_MIDPOINT)
+
+
+def sector_delivery_propensity(codigo_act: str) -> float:
+    """Longest-matching-prefix lookup: an `ACTIVITY_DELIVERY_PROPENSITY`
+    entry (2, 4, or 6-digit SCIAN prefix) wins over the 2-digit
+    `SECTOR_DELIVERY_PROPENSITY` default when it matches `codigo_act`."""
+    for prefix in sorted(ACTIVITY_DELIVERY_PROPENSITY.keys(), key=len, reverse=True):
+        if codigo_act.startswith(prefix):
+            return ACTIVITY_DELIVERY_PROPENSITY[prefix]
+    return SECTOR_DELIVERY_PROPENSITY.get(codigo_act[:2], DEFAULT_SECTOR_DELIVERY_PROPENSITY)
+
+
+def compute_workplace_weight(per_ocu: str, codigo_act: str) -> tuple[float, float]:
+    """Return (raw estimated employment, propensity-adjusted weight) for one
+    DENUE establishment row."""
+    employment = estimate_workplace_employment(per_ocu)
+    weight = employment * sector_delivery_propensity(codigo_act)
+    return employment, weight
 
 
 # --- shared DENUE parsing ----------------------------------------------------
@@ -332,6 +474,114 @@ def build_population(force: bool = False) -> pd.DataFrame:
     return cell_agg
 
 
+# --- stage: workplaces -> workplaces.parquet ---------------------------------
+
+
+def build_workplaces(force: bool = False) -> pd.DataFrame:
+    if WORKPLACES_OUTPUT.exists() and not force:
+        print(f"[workplaces] {WORKPLACES_OUTPUT} already exists, skipping (use --force to rebuild)")
+        return pd.read_parquet(WORKPLACES_OUTPUT)
+
+    print(f"[workplaces] parsing {DENUE_PATH} (encoding=latin-1)...")
+    rows: list[dict] = []
+    per_sector_est: Counter[str] = Counter()
+    per_sector_emp: Counter[str] = Counter()
+
+    for row in _iter_denue_rows(DENUE_PATH):
+        codigo_act = row["codigo_act"]
+        sector = codigo_act[:2]
+        if sector not in WORKPLACE_SECTOR_PREFIXES:
+            continue
+        cve_mun = row["cve_mun"]
+        if cve_mun not in geo.TARGET_MUNICIPALITIES:
+            continue
+
+        per_ocu = row["per_ocu"]
+        employment, weight = compute_workplace_weight(per_ocu, codigo_act)
+        per_sector_est[sector] += 1
+        per_sector_emp[sector] += employment
+
+        lat = float(row["latitud"])
+        lon = float(row["longitud"])
+        rows.append(
+            {
+                "denue_id": row["id"],
+                "nom_estab": row["nom_estab"],
+                "codigo_act": codigo_act,
+                "sector": sector,
+                "nombre_act": row["nombre_act"],
+                "per_ocu": per_ocu,
+                "cve_mun": cve_mun,
+                "municipio": geo.TARGET_MUNICIPALITIES[cve_mun],
+                "lat": lat,
+                "lon": lon,
+                "employment": employment,
+                "weight": weight,
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    df["cell"] = [geo.latlon_to_cell(lat, lon) for lat, lon in zip(df["lat"], df["lon"])]
+
+    total_establishments = len(df)
+    total_employment = df["employment"].sum()
+
+    print(f"[workplaces] {total_establishments} establishments across {len(WORKPLACE_SECTOR_PREFIXES)} SCIAN "
+          f"sectors in the 4 target municipalities (est. employment {total_employment:.0f}):")
+    for sector in sorted(WORKPLACE_SECTOR_PREFIXES, key=lambda s: -per_sector_emp.get(s, 0)):
+        actual_est = per_sector_est.get(sector, 0)
+        actual_emp = per_sector_emp.get(sector, 0.0)
+        expected = EXPECTED_WORKPLACE_SECTOR_STATS.get(sector)
+        flag = "" if expected is None else f"  (reference: {expected[0]} est., {expected[1]} employment)"
+        print(f"  {SECTOR_LABELS[sector]} ({sector}): {actual_est} establishments, "
+              f"{actual_emp:.0f} est. employment{flag}")
+
+    # Auditability for the sector-56 activity-level override worked example
+    # (see ACTIVITY_DELIVERY_PROPENSITY comment): raw vs. propensity-adjusted
+    # weight, and the call-centre signal specifically.
+    sector_56 = df[df["sector"] == "56"]
+    if not sector_56.empty:
+        raw_56 = sector_56["employment"].sum()
+        weighted_56 = sector_56["weight"].sum()
+        flat_56 = raw_56 * SECTOR_DELIVERY_PROPENSITY["56"]
+        call_centres = df[df["codigo_act"] == "561422"]
+        print(
+            f"[workplaces] sector 56 (business support): raw employment {raw_56:.0f}, "
+            f"flat-rate weight would be {flat_56:.0f}, activity-override weight is {weighted_56:.0f}"
+        )
+        if not call_centres.empty:
+            print(
+                f"[workplaces]   561422 call centres: {len(call_centres)} establishments, "
+                f"{call_centres['employment'].sum():.0f} employment, "
+                f"{call_centres['weight'].sum():.0f} weight (propensity 1.2)"
+            )
+
+    # Data-integrity assertions: MUST reproduce the documented reference
+    # counts, or the sector filter / parsing has silently regressed.
+    assert total_establishments == EXPECTED_WORKPLACE_TOTAL_ESTABLISHMENTS, (
+        f"expected {EXPECTED_WORKPLACE_TOTAL_ESTABLISHMENTS} workplace establishments, got {total_establishments}"
+    )
+    assert abs(total_employment - EXPECTED_WORKPLACE_TOTAL_EMPLOYMENT) < 1.0, (
+        f"expected total estimated employment {EXPECTED_WORKPLACE_TOTAL_EMPLOYMENT}, got {total_employment:.0f}"
+    )
+    print("[workplaces] data-integrity assertions passed against documented reference counts")
+
+    cell_agg = df.groupby("cell", as_index=False).agg(
+        employment=("employment", "sum"),
+        weight=("weight", "sum"),
+        n_establishments=("denue_id", "count"),
+    )
+
+    FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
+    cell_agg.to_parquet(WORKPLACES_OUTPUT, index=False)
+    print(
+        f"[workplaces] aggregated to {len(cell_agg)} H3 cells, total employment "
+        f"{cell_agg['employment'].sum():.0f}, total weight {cell_agg['weight'].sum():.0f}"
+    )
+    print(f"[workplaces] wrote {WORKPLACES_OUTPUT}")
+    return cell_agg
+
+
 # --- stage: cells -> cells.parquet -------------------------------------------
 
 
@@ -384,6 +634,7 @@ def build_matrix(force: bool = False):
 STAGE_FUNCS = {
     "denue": build_restaurants,
     "ageb": build_population,
+    "workplaces": build_workplaces,
     "cells": build_cells,
     "graph": build_graph,
     "matrix": build_matrix,

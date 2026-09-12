@@ -21,11 +21,41 @@ explicit, auditable bimodal lunch/dinner table (see
 sequences supplied by the caller — this module never imports `weather.py`
 or `events.py`, it only accepts their effect as a plain number.
 
-Destinations are sampled with a gravity model: population-weighted, decaying
-with great-circle distance from the exact restaurant coordinates (not the
-cell centroid — H3 res-7 cells are ~1.2 km across, so restaurant-level
-precision matters for the destination gravity calculation even though it
-doesn't change which cell the restaurant itself is in).
+Destinations are sampled with a gravity model, decaying with great-circle
+distance from the exact restaurant coordinates (not the cell centroid — H3
+res-7 cells are ~1.2 km across, so restaurant-level precision matters for
+the destination gravity calculation even though it doesn't change which
+cell the restaurant itself is in).
+
+The destination WEIGHT fed into that gravity decay is itself a time-varying
+blend of two layers, each normalised to its own total mass before blending
+(sum-to-1 over the destination cell grid, since they differ in raw scale by
+~6x and an unnormalised blend would make the mixing weight meaningless):
+
+    dest_weight(cell, t) = alpha(t) * employment_norm(cell)
+                            + (1 - alpha(t)) * population_norm(cell)
+
+`population_norm` comes straight from the real INEGI AGEB population fixture
+(`fixtures/population.parquet`). `employment_norm` comes from the DENUE
+workplace fixture (`fixtures/workplaces.parquet`, column `weight` — already
+propensity-adjusted per SCIAN sector/activity, used as-is here, never
+recomputed). `alpha(t)` is an explicit calibration table (see
+`ALPHA_CALIBRATION`) that rises toward the 12:30-15:30 lunch peak and falls
+toward the 19:30-23:00 dinner peak, which is what makes the destination map
+actually move across the city over the course of a shift instead of only
+scaling in volume: an office tower with near-zero residential population
+now receives real lunch-hour delivery share.
+
+HONEST CAVEAT: workplace employment is ESTIMATED from INEGI `per_ocu`
+strata midpoints (not measured headcount), and the per-sector/per-activity
+delivery-propensity weights are domain judgement, not measured data (see
+`scripts/build_fixtures.py`'s `SECTOR_DELIVERY_PROPENSITY` /
+`ACTIVITY_DELIVERY_PROPENSITY`). Both nonetheless sit on a real
+georeferenced INEGI/DENUE census of businesses, not a synthetic layer.
+KNOWN SIMPLIFICATION: sector 62 (health) actually runs close to 24h while
+sector 61 (education) is weekday-daytime only, and neither is time-gated
+yet — both are treated as constant-in-time employment mass, only the
+overall employment-vs-population mix shifts via `alpha(t)`.
 
 Surge is not computed here: this module hands the raw per-cell-per-minute
 demand intensity to `surge.py`, which returns the ground-truth
@@ -64,6 +94,7 @@ PROJECT_ROOT = geo.PROJECT_ROOT
 FIXTURES_DIR = geo.FIXTURES_DIR
 RESTAURANTS_FIXTURE_PATH = FIXTURES_DIR / "restaurants.parquet"
 POPULATION_FIXTURE_PATH = FIXTURES_DIR / "population.parquet"
+WORKPLACES_FIXTURE_PATH = FIXTURES_DIR / "workplaces.parquet"
 
 # --------------------------------------------------------------------------
 # Temporal profile: explicit, auditable bimodal lunch/dinner tables.
@@ -124,6 +155,43 @@ def temporal_profile(minute_of_day: float, day_type: str) -> float:
     table = WEEKEND_TEMPORAL_PROFILE if day_type == "weekend" else WEEKDAY_TEMPORAL_PROFILE
     xs = np.array([p[0] for p in table], dtype=float)
     ys = np.array([p[1] for p in table], dtype=float)
+    return float(np.interp(minute_of_day, xs, ys))
+
+
+# --------------------------------------------------------------------------
+# Destination blend: employment-vs-population mixing weight over the day.
+# CALIBRATION VALUES, not measured data — same control-point / linear-
+# interpolation shape as the temporal profile tables above, chosen so alpha
+# sits near 0.65 (employment-dominated) across the 12:30-15:30 lunch peak and
+# near 0.15 (population-dominated) across the 19:30-23:00 dinner peak, with a
+# smooth ramp in between. One table for both day types: workplace lunch
+# demand is a weekday-strength phenomenon, but the brief's lunch/dinner
+# windows are shared, so a single alpha shape is used until a weekday/weekend
+# split is separately justified.
+# --------------------------------------------------------------------------
+
+ALPHA_CALIBRATION: list[tuple[int, float]] = [
+    (0, 0.10),  # 00:00 overnight: population-dominated (home deliveries)
+    (360, 0.10),  # 06:00 pre-dawn
+    (420, 0.15),  # 07:00 early commute, offices just opening
+    (600, 0.35),  # 10:00 offices filling up, rising toward lunch
+    (690, 0.55),  # 11:30 fast ramp into lunch peak
+    (750, 0.65),  # 12:30 lunch peak starts
+    (930, 0.65),  # 15:30 lunch peak ends
+    (1000, 0.40),  # 16:40 afternoon lull, offices thinning
+    (1080, 0.20),  # 18:00 workers heading home, low point before dinner ramp
+    (1170, 0.15),  # 19:30 dinner peak starts, home-dominated
+    (1380, 0.15),  # 23:00 dinner peak ends
+    (1410, 0.12),  # 23:30 winding down
+    (1440, 0.10),  # 24:00 midnight (wraps back to 0)
+]
+
+
+def alpha_for(minute_of_day: float) -> float:
+    """Employment-vs-population destination mixing weight at one
+    minute-of-day, linearly interpolated from `ALPHA_CALIBRATION`."""
+    xs = np.array([p[0] for p in ALPHA_CALIBRATION], dtype=float)
+    ys = np.array([p[1] for p in ALPHA_CALIBRATION], dtype=float)
     return float(np.interp(minute_of_day, xs, ys))
 
 
@@ -213,6 +281,11 @@ def _load_population(path: Path = POPULATION_FIXTURE_PATH) -> pd.DataFrame:
     return df.sort_values("cell").reset_index(drop=True)
 
 
+def _load_workplaces(path: Path = WORKPLACES_FIXTURE_PATH) -> pd.DataFrame:
+    df = pd.read_parquet(path)
+    return df.sort_values("cell").reset_index(drop=True)
+
+
 # --------------------------------------------------------------------------
 # Precomputed spatial structures
 # --------------------------------------------------------------------------
@@ -245,7 +318,13 @@ class _DemandModel:
     order draw in one `build_order_stream` call. Deterministic given the
     same fixtures and scenario seed."""
 
-    def __init__(self, restaurants: pd.DataFrame, population: pd.DataFrame, kitchen_rng: np.random.Generator):
+    def __init__(
+        self,
+        restaurants: pd.DataFrame,
+        population: pd.DataFrame,
+        workplaces: pd.DataFrame,
+        kitchen_rng: np.random.Generator,
+    ):
         self.restaurants = restaurants
         n = len(restaurants)
 
@@ -277,23 +356,62 @@ class _DemandModel:
         self.population = population
         self.pop_cells: list[str] = population["cell"].tolist()
         pop_values = population["population"].to_numpy(dtype=float)
-        pop_centroids = [geo.cell_centroid(c) for c in self.pop_cells]
-        pop_lat = np.array([c[0] for c in pop_centroids])
-        pop_lon = np.array([c[1] for c in pop_centroids])
+
+        self.workplaces = workplaces
+        self.workplace_cells: list[str] = workplaces["cell"].tolist()
+        workplace_values = workplaces["weight"].to_numpy(dtype=float)
+
+        # Destination universe: union of population cells and workplace
+        # cells. A cell that is office-dense but residentially sparse (e.g.
+        # a San Pedro office tower) may be entirely absent from the
+        # population fixture, and must still be reachable as a destination.
+        self.dest_cells: list[str] = sorted(set(self.pop_cells) | set(self.workplace_cells))
+        dest_centroids = [geo.cell_centroid(c) for c in self.dest_cells]
+        dest_lat = np.array([c[0] for c in dest_centroids])
+        dest_lon = np.array([c[1] for c in dest_centroids])
+
+        pop_map = dict(zip(self.pop_cells, pop_values))
+        workplace_map = dict(zip(self.workplace_cells, workplace_values))
+        pop_vec = np.array([pop_map.get(c, 0.0) for c in self.dest_cells])
+        workplace_vec = np.array([workplace_map.get(c, 0.0) for c in self.dest_cells])
+
+        # Normalise each layer to its own total mass (sum-to-1) BEFORE
+        # blending: raw magnitudes differ by ~6x (2.33M residents vs. ~228k
+        # propensity-weighted workplace employment), so blending them
+        # unnormalised would make `alpha` meaningless. Sum-to-1 is the
+        # natural choice here because each layer is used directly as a
+        # destination probability distribution over `dest_cells` before the
+        # `alpha`-weighted mixture and the per-restaurant gravity decay.
+        pop_sum = pop_vec.sum()
+        workplace_sum = workplace_vec.sum()
+        self.population_norm = pop_vec / pop_sum if pop_sum > 0 else np.zeros_like(pop_vec)
+        self.employment_norm = workplace_vec / workplace_sum if workplace_sum > 0 else np.zeros_like(workplace_vec)
 
         r_lat = restaurants["lat"].to_numpy(dtype=float)
         r_lon = restaurants["lon"].to_numpy(dtype=float)
-        dist = _haversine_km_matrix(r_lat, r_lon, pop_lat, pop_lon)  # (n_restaurants, n_pop_cells)
-        gravity_weight = pop_values[None, :] * np.exp(-dist / DEMAND_CALIBRATION["gravity_d0_km"])
-        row_sums = gravity_weight.sum(axis=1, keepdims=True)
-        row_sums[row_sums <= 0] = 1.0
-        self.dest_probs = gravity_weight / row_sums  # (n_restaurants, n_pop_cells)
+        dist = _haversine_km_matrix(r_lat, r_lon, dest_lat, dest_lon)  # (n_restaurants, n_dest_cells)
+        decay = np.exp(-dist / DEMAND_CALIBRATION["gravity_d0_km"])
+
+        # Two separate row-normalized (per restaurant, sums to 1) gravity
+        # distributions, one per destination layer. Blending these two
+        # *row-normalized* distributions with `alpha(t)` at sampling time
+        # (see `build_order_stream`) is equivalent to normalizing-then-
+        # decaying-then-blending, and keeps the decay identical for both
+        # layers ("distance decay applied on top, as now").
+        pop_gravity = self.population_norm[None, :] * decay
+        pop_row_sums = pop_gravity.sum(axis=1, keepdims=True)
+        pop_row_sums[pop_row_sums <= 0] = 1.0
+        self.dest_probs_population = pop_gravity / pop_row_sums  # (n_restaurants, n_dest_cells)
+
+        employment_gravity = self.employment_norm[None, :] * decay
+        employment_row_sums = employment_gravity.sum(axis=1, keepdims=True)
+        employment_row_sums[employment_row_sums <= 0] = 1.0
+        self.dest_probs_employment = employment_gravity / employment_row_sums  # (n_restaurants, n_dest_cells)
 
         # Cell grid tracked by the surge field: union of restaurant cells
-        # and population cells, deterministic order.
-        self.full_cell_grid: list[str] = sorted(set(self.origin_cells) | set(self.pop_cells))
+        # and destination cells, deterministic order.
+        self.full_cell_grid: list[str] = sorted(set(self.origin_cells) | set(self.dest_cells))
 
-        pop_map = dict(zip(self.pop_cells, pop_values))
         floor = SUPPLY_SEED_CALIBRATION["min_baseline_weight"]
         self.baseline_weights: dict[str, float] = {c: max(pop_map.get(c, 0.0), floor) for c in self.full_cell_grid}
 
@@ -314,6 +432,7 @@ def build_order_stream(
     courier_supply_mult: Sequence[float] | None = None,
     restaurants_path: Path = RESTAURANTS_FIXTURE_PATH,
     population_path: Path = POPULATION_FIXTURE_PATH,
+    workplaces_path: Path = WORKPLACES_FIXTURE_PATH,
 ) -> list[OrderOffer]:
     """Generate the full ground-truth order stream for one shift.
 
@@ -343,16 +462,18 @@ def build_order_stream(
     day_type = day_type_for(day_of_week)
     profile_arr = np.array([temporal_profile(m % 1440, day_type) for m in minutes])
     combined_mult = profile_arr * weather_arr * event_arr
+    alpha_arr = np.array([alpha_for(m % 1440) for m in minutes])
 
     restaurants = _load_restaurants(restaurants_path)
     population = _load_population(population_path)
+    workplaces = _load_workplaces(workplaces_path)
 
     rngs = rng_streams(scenario_seed)
     orders_rng = rngs["orders"]
     kitchen_rng = rngs["kitchen"]
     competitors_rng = rngs["competitors"]
 
-    model = _DemandModel(restaurants, population, kitchen_rng)
+    model = _DemandModel(restaurants, population, workplaces, kitchen_rng)
 
     rate = DEMAND_CALIBRATION["orders_per_weight_unit_per_min"]
     demand_by_cell: dict[str, np.ndarray] = {
@@ -397,14 +518,23 @@ def build_order_stream(
             chosen_global = local_idx[chosen_local]
 
             surge_now = surge_field.at(cell, minute)
+            alpha_now = alpha_arr[t_idx]
 
             for g_idx in chosen_global:
                 origin_lat = float(lat_col[g_idx])
                 origin_lon = float(lon_col[g_idx])
                 denue_id = str(denue_col[g_idx])
 
-                dest_idx = orders_rng.choice(len(model.pop_cells), p=model.dest_probs[g_idx])
-                dest_cell = model.pop_cells[dest_idx]
+                # Time-varying destination blend (see module docstring):
+                # convex combination of two row-normalized (sum-to-1)
+                # gravity distributions, so the mixture still sums to 1.
+                dest_p = (
+                    alpha_now * model.dest_probs_employment[g_idx]
+                    + (1.0 - alpha_now) * model.dest_probs_population[g_idx]
+                )
+                dest_p = dest_p / dest_p.sum()
+                dest_idx = orders_rng.choice(len(model.dest_cells), p=dest_p)
+                dest_cell = model.dest_cells[dest_idx]
                 dest_centroid_lat, dest_centroid_lon = geo.cell_centroid(dest_cell)
                 jitter_r = jitter_radius * np.sqrt(orders_rng.uniform(0.0, 1.0))
                 jitter_bearing = orders_rng.uniform(0.0, 2 * np.pi)
