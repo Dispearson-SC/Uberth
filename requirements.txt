@@ -1,0 +1,12 @@
+numpy>=2.1
+pandas>=2.2
+scipy>=1.14
+pyarrow>=18
+networkx>=3.4
+osmnx>=2.0
+geopandas>=1.0
+shapely>=2.0
+pyproj>=3.7
+h3>=4.1
+pydantic>=2.9
+requests>=2.32

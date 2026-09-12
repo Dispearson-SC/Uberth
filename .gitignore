@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+Docs/
+fixtures/*.graphml
+fixtures/*.parquet
+.atl/
+.env
+cache/
+fixtures/raw/*.graphml
