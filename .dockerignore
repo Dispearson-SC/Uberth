@@ -1,0 +1,26 @@
+# Exclude everything, then let back in only what the image copies.
+#
+# The working directory is ~3.7 GB -- the OSM graph, the census extracts, the
+# virtualenv, the caches. The image needs 14 MB of it. Without this the build
+# context alone is the whole thing, sent to the daemon before the first
+# instruction runs, and a deploy from a clean clone would still drag in
+# anything a build step happened to produce.
+*
+
+!replays/
+!src/
+!deploy/
+!Dockerfile
+
+# Nothing under src/ is served except the dashboard; the simulator and the
+# agent produced these recordings and are not needed to play them back.
+src/*
+!src/viz/
+
+# Belt and braces: never ship credentials or fixtures even if a rule above
+# were loosened later.
+**/.env
+**/__pycache__/
+**/*.pyc
+fixtures/
+.venv/

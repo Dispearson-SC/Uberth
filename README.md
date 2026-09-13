@@ -88,6 +88,24 @@ reliable signal is the payout. The agent is not losing because it cannot
 think; it is losing because the simulator hides what it would think about.
 That is an open item, and it is a world problem, not an agent problem.
 
+## Deploying the dashboard
+
+There is no server-side application to deploy. A shift is simulated offline,
+every tick is recorded to a file, and the browser plays it back with zero
+computation on the server — which is the whole reason the demo cannot stall
+on stage. So the deploy is nginx plus 14 MB of recordings.
+
+A `Dockerfile` is included. On Coolify: **New Resource → Docker Compose /
+Dockerfile**, point it at this repository, build pack `Dockerfile`, port
+`80`. Nothing else is required — no environment variables, no volumes, no
+database. `/` redirects to the dashboard.
+
+The nginx config in `deploy/nginx.conf` sends `no-store` on the HTML and
+caches the JSON for an hour. That split is deliberate: the recordings are
+immutable once written, and a cached copy of the PAGE is the thing that
+wastes an afternoon, because whoever is looking at the stale version is
+rarely the person who changed it.
+
 ## Documentation
 
 - `Docs/architecture/STATE.md` — where things stand, including what is broken
