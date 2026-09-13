@@ -124,6 +124,32 @@
   }
   #surgeBtn.active { background: rgba(255,107,44,0.18); border-color: #ff6b2c; color: #ff9a5c; }
 
+  /* Time on shift: the counter grid's Idle figure, turned the other way up. */
+  .onshift { margin-top: 8px; }
+  .onshift-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text-dim); margin-bottom: 4px;
+  }
+  .onshift-head b { color: var(--text); font-size: 11px; letter-spacing: 0; }
+  .onshift-bar {
+    display: flex; height: 9px; border-radius: 5px; overflow: hidden;
+    background: #161c26; border: 1px solid var(--border);
+  }
+  .onshift-bar .work { background: #3ddc84; }
+  .onshift-bar .idle { background: #4a5568; }
+  .onshift-legend {
+    display: flex; justify-content: space-between; gap: 8px;
+    margin-top: 4px; font-size: 10.5px; color: var(--text-dim);
+  }
+  .onshift-legend b { color: var(--text); }
+  .onshift-legend i {
+    display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+    margin-right: 4px; vertical-align: -1px;
+  }
+  .onshift-legend i.work { background: #3ddc84; }
+  .onshift-legend i.idle { background: #4a5568; }
+
   #netBadge {
     position: absolute; right: 10px; top: 10px; z-index: 500;
     background: rgba(255,204,77,0.15); border: 1px solid var(--warn);
@@ -1165,6 +1191,14 @@
   // must never stop the page from opening. The scenario button simply does not
   // appear when they are absent.
   const DUEL_NAMES = ["duel_smart", "duel_floor"];
+  // Each recorded showcase pair, and the id its dropdown entries carry. The
+  // id has to be part of the entry key or a second pair would overwrite the
+  // first: the whole day machinery is keyed on that string.
+  const SHOWCASE_MANIFESTS = [
+    ["showcase.json", ""],
+    ["showcase_b.json", "-b"],
+    ["showcase_c.json", "-c"],
+  ];
   // Several recorded days, each one available clean and with road closures.
   // The manifest is optional and lazily consumed: a day's four files are
   // fetched only when that day is selected, because loading eight shifts up
@@ -1185,15 +1219,52 @@
   // difference recorded in the label: unlike a day's own hostile variant,
   // these two are different DATES, so the chaotic one differs in weather as
   // well as in closed roads and is not a controlled comparison.
-  function showcaseAsDayEntry(doc) {
+  // The tuned agent, when the showcase recorded one, as a SECOND selectable
+  // scenario rather than a replacement for the first. The comparison that
+  // matters is the same agent with different beliefs about the same city, and
+  // overwriting the shipped lane would throw away the "before".
+  function showcaseTunedEntry(doc, id) {
+    id = id || "";
+    const byKey = {};
+    for (const s of (doc && doc.scenarios) || []) byKey[s.key] = s;
+    const calm = byKey.calm, chaos = byKey.chaos;
+    if (!calm || !chaos) return null;
+    if (!(calm.files || {}).tuned || !(chaos.files || {}).tuned) return null;
+    // The lane machinery asks for a "smart" file; the tuned recording is
+    // handed over under that name so nothing else has to know the difference.
+    const swap = sc => ({ smart: sc.files.tuned, floor: sc.files.floor });
+    return {
+      date: `showcase${id}-tuned`,
+      weekday: "Demo",
+      label: "Tuned agent",
+      showcaseName: `TUNED · ${calm.label}${calm.date === chaos.date ? "" : " vs " + chaos.label}`,
+      note: "the same agent, re-fitted to the corrected world",
+      conditions: calm.conditions,
+      variantLabel: {
+        normal: `TUNED · ${calm.label}, ${calm.date}`,
+        hostile: `TUNED · ${chaos.label}, ${chaos.date}, ${chaos.peak_concurrent_closures} roads shut at once`,
+      },
+      variants: {
+        normal: { files: swap(calm), summary: calm.summary, closures: 0, closures_met: {} },
+        hostile: {
+          files: swap(chaos), summary: chaos.summary,
+          closures: chaos.closures, closures_met: chaos.closures_met || {},
+        },
+      },
+    };
+  }
+
+  function showcaseAsDayEntry(doc, id) {
+    id = id || "";
     const byKey = {};
     for (const s of (doc && doc.scenarios) || []) byKey[s.key] = s;
     const calm = byKey.calm, chaos = byKey.chaos;
     if (!calm || !chaos) return null;
     return {
-      date: "showcase",
+      date: `showcase${id}`,
       weekday: "Demo",
       label: "Demo pair",
+      showcaseName: `shipped · ${calm.label}${calm.date === chaos.date ? "" : " vs " + chaos.label}`,
       note: `${calm.note} — vs — ${chaos.note}`,
       conditions: calm.conditions,
       variantLabel: {
@@ -1233,17 +1304,34 @@
     // day machinery rather than given a parallel one: "ordinary" and
     // "chaotic" ARE a normal and a hostile variant, so the scenario toggle
     // already means exactly the right thing for them.
-    try {
-      const res = await fetch("../../replays/showcase.json");
-      if (res.ok) {
-        const entry = showcaseAsDayEntry(await res.json());
-        if (entry) {
-          if (!dayManifest) dayManifest = { days: [] };
-          if (!Array.isArray(dayManifest.days)) dayManifest.days = [];
-          dayManifest.days = [entry, ...dayManifest.days.filter(d => d.date !== entry.date)];
-        }
-      }
-    } catch (e) { /* optional */ }
+    // Each showcase manifest is one recorded pair. They are fetched in order
+    // and every one that is present contributes its scenarios; a missing file
+    // is not an error, it is simply a run nobody has built yet.
+    for (const [file, id] of SHOWCASE_MANIFESTS) {
+      try {
+        const res = await fetch("../../replays/" + file);
+        if (!res.ok) continue;
+        const doc = await res.json();
+        const entries = [showcaseAsDayEntry(doc, id), showcaseTunedEntry(doc, id)].filter(Boolean);
+        if (!entries.length) continue;
+        if (!dayManifest) dayManifest = { days: [] };
+        if (!Array.isArray(dayManifest.days)) dayManifest.days = [];
+        const added = new Set(entries.map(e => e.date));
+        // The tuned pair first: it is the current state of the agent, and the
+        // shipped one is what it is measured against rather than the default.
+        entries.reverse();
+        dayManifest.days = [...dayManifest.days.filter(d => !added.has(d.date)), ...entries];
+      } catch (e) { /* optional */ }
+    }
+    // Tuned pairs to the front of the whole list, shipped pairs behind them.
+    if (dayManifest && Array.isArray(dayManifest.days)) {
+      const rank = d => (String(d.date).includes("tuned") ? 0
+        : String(d.date).startsWith("showcase") ? 1 : 2);
+      dayManifest.days = dayManifest.days
+        .map((d, i) => [d, i])
+        .sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1])
+        .map(([d]) => d);
+    }
     // The duel pair is fetched separately and its failure is swallowed: it is
     // an extra scenario, not a dependency.
     await Promise.all(DUEL_NAMES.map(async name => {
@@ -1408,6 +1496,43 @@
     app.currentMinute = clamp(app.currentMinute, app.minMinute, app.maxMinute);
   }
 
+  function fmtDuration(minutes) {
+    const m = Math.max(0, Math.round(minutes));
+    const h = Math.floor(m / 60);
+    return h ? `${h}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`;
+  }
+
+  // The reverse of the idle counter, in its own block: of the shift elapsed so
+  // far, how much of it the courier was actually WORKING.
+  //
+  // Both numbers are shown because they answer different questions and a
+  // reader will want whichever matches the one they are asking. "18 minutes
+  // idle" says how much was wasted; "4h 02m on the job, 93% of the shift"
+  // says how hard it was worked -- and the percentage is the honest way to
+  // compare two couriers who did not stop at the same minute, which a raw
+  // minute count is not.
+  function onShiftHTML(s) {
+    const elapsed = Math.max(s.minutes_elapsed || 0, 0);
+    if (elapsed <= 0) return "";
+    const idle = clamp(s.minutes_idle || 0, 0, elapsed);
+    const working = elapsed - idle;
+    const workPct = (working / elapsed) * 100;
+    return `
+      <div class="onshift">
+        <div class="onshift-head">
+          <span>Time on shift</span><b>${fmtDuration(elapsed)}</b>
+        </div>
+        <div class="onshift-bar">
+          <span class="work" style="width:${workPct.toFixed(1)}%"></span>
+          <span class="idle" style="width:${(100 - workPct).toFixed(1)}%"></span>
+        </div>
+        <div class="onshift-legend">
+          <span><i class="work"></i>Working <b>${fmtDuration(working)}</b> (${workPct.toFixed(0)}%)</span>
+          <span><i class="idle"></i>Idle <b>${fmtDuration(idle)}</b> (${(100 - workPct).toFixed(0)}%)</span>
+        </div>
+      </div>`;
+  }
+
   function renderCounters() {
     const el = document.getElementById("counters");
     const lanes = [
@@ -1428,6 +1553,7 @@
             <div class="counter"><div class="value">${s.deliveries_completed}</div><div class="label">Deliveries</div></div>
             <div class="counter"><div class="value">${Math.round(s.minutes_idle)} <span style="font-size:11px;color:var(--text-dim)">min</span></div><div class="label">Idle</div></div>
           </div>
+          ${onShiftHTML(s)}
         </div>`;
     }
     const a = vals.A, b = vals.B;
@@ -1895,9 +2021,8 @@
       daySelect.innerHTML =
         `<option value="">Reference recording</option>` +
         days.map(d => {
-          const name = d.date === "showcase"
-            ? "Demo pair — ordinary vs chaotic"
-            : `${d.label} — ${d.date} (${d.weekday.slice(0, 3)})`;
+          const name = d.showcaseName
+            || `${d.label} — ${d.date} (${d.weekday.slice(0, 3)})`;
           return `<option value="${d.date}">${name}</option>`;
         }).join("");
       daySelect.addEventListener("change", async e => {
@@ -2265,8 +2390,11 @@
     // reference recording would open the page on the one view where half of
     // what this dashboard can now draw is simply absent.
     const daySelect = document.getElementById("daySelect");
-    if (daySelect && [...daySelect.options].some(o => o.value === "showcase")) {
-      daySelect.value = "showcase";
+    const opening = ["showcase-tuned", "showcase-b-tuned", "showcase"].find(
+      v => daySelect && [...daySelect.options].some(o => o.value === v)
+    );
+    if (opening) {
+      daySelect.value = opening;
       daySelect.dispatchEvent(new Event("change"));
     }
   }

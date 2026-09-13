@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "seed": 42,
+  "window": {
+    "name": "reference",
+    "label": "Reference 14:00-22:00"
+  },
+  "payout_floor_mxn": 40.0,
+  "surge_stride_min": 4,
+  "scenarios": [
+    {
+      "key": "calm",
+      "date": "2026-07-15",
+      "weekday": "Wednesday",
+      "label": "Mild Wednesday",
+      "note": "33.2 C, no rain \u2014 the easy afternoon",
+      "conditions": {
+        "apparent_min": 28.3,
+        "apparent_max": 33.2,
+        "minutes_over_40c": 0,
+        "raining_minutes": 0,
+        "peak_rain_mm_per_hour": 0.0
+      },
+      "closures": 0,
+      "closures_met": {},
+      "peak_concurrent_closures": 0,
+      "tuned_config": {
+        "bar_factor": 0.7839,
+        "risk_posture": 0.0987,
+        "base_reservation_mxn_per_hour": 23.6223,
+        "choosy_factor_early": 1.2094,
+        "desperate_factor_late": 0.5254,
+        "prior_offers_per_hour": 12.8975,
+        "dead_minutes_at_zero_demand": 14.367,
+        "min_idle_minutes_before_moving": 15.6853,
+        "max_reposition_km": 8.3261,
+        "min_gain_minutes": 3.1823,
+        "congestion_belief_factor": 0.15,
+        "fuel_cost_per_km_mxn": 1.1,
+        "vehicle_wear_per_km_mxn": 0.4,
+        "opportunity_mxn_per_minute": 1.0
+      },
+      "files": {
+        "smart": "showcase_b_calm_smart.json",
+        "floor": "showcase_b_calm_floor.json",
+        "tuned": "showcase_b_calm_tuned.json"
+      },
+      "summary": {
+        "smart": {
+          "take_home": 814.5,
+          "mxn_h": 99.1,
+          "mxn_km": 7.47,
+          "km": 109.1,
+          "deliveries": 17,
+          "per_hour": 2.07,
+          "mxn_per_trip": 47.9
+        },
+        "floor": {
+          "take_home": 987.0,
+          "mxn_h": 109.7,
+          "mxn_km": 7.22,
+          "km": 136.6,
+          "deliveries": 17,
+          "per_hour": 1.89,
+          "mxn_per_trip": 58.1
+        },
+        "tuned": {
+          "take_home": 1117.8,
+          "mxn_h": 137.4,
+          "mxn_km": 8.33,
+          "km": 134.2,
+          "deliveries": 23,
+          "per_hour": 2.83,
+          "mxn_per_trip": 48.6
+        }
+      }
+    },
+    {
+      "key": "chaos",
+      "date": "2026-07-15",
+      "weekday": "Wednesday",
+      "label": "Mild Wednesday",
+      "note": "33.2 C, no rain \u2014 the easy afternoon, five roads closed together",
+      "conditions": {
+        "apparent_min": 28.3,
+        "apparent_max": 33.2,
+        "minutes_over_40c": 0,
+        "raining_minutes": 0,
+        "peak_rain_mm_per_hour": 0.0
+      },
+      "closures": 5,
+      "closures_met": {
+        "smart": 4,
+        "floor": 5,
+        "tuned": 3
+      },
+      "peak_concurrent_closures": 5,
+      "tuned_config": {
+        "bar_factor": 0.7839,
+        "risk_posture": 0.0987,
+        "base_reservation_mxn_per_hour": 23.6223,
+        "choosy_factor_early": 1.2094,
+        "desperate_factor_late": 0.5254,
+        "prior_offers_per_hour": 12.8975,
+        "dead_minutes_at_zero_demand": 14.367,
+        "min_idle_minutes_before_moving": 15.6853,
+        "max_reposition_km": 8.3261,
+        "min_gain_minutes": 3.1823,
+        "congestion_belief_factor": 0.15,
+        "fuel_cost_per_km_mxn": 1.1,
+        "vehicle_wear_per_km_mxn": 0.4,
+        "opportunity_mxn_per_minute": 1.0
+      },
+      "files": {
+        "smart": "showcase_b_chaos_smart.json",
+        "floor": "showcase_b_chaos_floor.json",
+        "tuned": "showcase_b_chaos_tuned.json"
+      },
+      "summary": {
+        "smart": {
+          "take_home": 887.0,
+          "mxn_h": 109.7,
+          "mxn_km": 6.91,
+          "km": 128.3,
+          "deliveries": 18,
+          "per_hour": 2.23,
+          "mxn_per_trip": 49.3
+        },
+        "floor": {
+          "take_home": 987.0,
+          "mxn_h": 111.1,
+          "mxn_km": 6.89,
+          "km": 143.1,
+          "deliveries": 17,
+          "per_hour": 1.91,
+          "mxn_per_trip": 58.1
+        },
+        "tuned": {
+          "take_home": 1049.6,
+          "mxn_h": 127.2,
+          "mxn_km": 7.76,
+          "km": 135.3,
+          "deliveries": 21,
+          "per_hour": 2.55,
+          "mxn_per_trip": 50.0
+        }
+      }
+    }
+  ]
+}

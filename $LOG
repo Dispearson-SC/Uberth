@@ -1,0 +1,13 @@
+  ... loaded from cache in 1 s
+  ... agent travel skeleton ready in 0 s (127 cells)
+NetworkTravelOracle: '8748a200cffffff' -> '8748a2029ffffff' has no route even in the pristine pre-closure baseline; falling back to a straight-line estimate (6.86 km, 32.95 min).
+smart activities {'idle': 11, 'to_restaurant': 137, 'waiting_kitchen': 87, 'to_customer': 236, 'refuelling': 9}
+smart decisions {'hold': 2, 'accept': 21, 'reject': 36, 'refuel': 8}
+smart offers_seen=65 accepted=21 rate=32.3%
+smart longest idle streak (min): 8
+
+floor activities {'idle': 5, 'to_restaurant': 147, 'waiting_kitchen': 108, 'to_customer': 245, 'refuelling': 9, 'repositioning': 13}
+floor decisions {'hold': 1, 'reject': 29, 'accept': 22, 'refuel': 1, 'reposition': 1}
+floor offers_seen=51 accepted=22 rate=43.1%
+floor longest idle streak (min): 2
+

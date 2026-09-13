@@ -142,6 +142,29 @@ TRAVEL_CALIBRATION: dict[str, float] = {
     "rain_slowdown_per_mm": 0.08,
     "max_rain_multiplier": 1.45,
     # Missing traffic belief for a cell: assume free flow, but barely believe it.
+    # What the courier believes a jam costs THEM, as a fraction of what it
+    # costs the cars around them. 1.0 is "a jam is a jam"; lower is a rider
+    # who knows they filter between lanes.
+    #
+    # This is SELF-KNOWLEDGE, not a privileged reading of the world. A person
+    # who rides a delivery motorcycle every day knows that stopped traffic
+    # does not stop them, and D11 already used exactly that fact as the
+    # reason this agent does not buy a congestion feed. The world models it
+    # in `world/traffic.py: MOTORCYCLE_FILTERING_FACTOR`; until now nothing
+    # on the agent's side did, so the forward model priced every leg at the
+    # full CAR multiplier.
+    #
+    # Measured consequence of believing 1.0: a decision trace reading "4.1 km
+    # at a believed traffic factor of 2.44" -- 28 minutes for a leg the world
+    # would move it through in a fraction of that, against a measured shift
+    # speed of 31.8 km/h. Every trip looked unprofitable per hour, the long
+    # well-paid ones worst of all, and the agent quietly specialised in short
+    # cheap work while a flat 40 MXN floor took the good jobs.
+    #
+    # Scales the EXCESS over free flow, never the free-flow term: filtering
+    # buys nothing on an empty road. Same shape as the world's constant, for
+    # the same reason.
+    "congestion_belief_factor": 1.0,
     "default_traffic_multiplier": 1.0,
     "default_traffic_confidence": 0.30,
 }

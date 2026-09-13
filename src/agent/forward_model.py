@@ -203,7 +203,11 @@ class ForwardModel:
 
         origin = self.traffic(self._index.nearest(from_lat, from_lon))
         destination = self.traffic(self._index.nearest(to_lat, to_lon))
-        live_multiplier = (origin.value + destination.value) / 2.0
+        # The live reading describes CARS. This courier is on a motorcycle and
+        # knows it -- see `congestion_belief_factor`. Only the excess over
+        # free flow is discounted; filtering buys nothing on an empty road.
+        raw_multiplier = (origin.value + destination.value) / 2.0
+        live_multiplier = 1.0 + (raw_multiplier - 1.0) * cal["congestion_belief_factor"]
         live_confidence = (origin.confidence + destination.confidence) / 2.0
 
         learned = ramp(

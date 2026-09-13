@@ -47,7 +47,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import copy  # noqa: E402
+
 import scripts.run_shift as rs  # noqa: E402
+from src.agent import calibration as agent_cal  # noqa: E402
 from src.agent.calibration import BASELINE_CALIBRATION  # noqa: E402
 from src.eval.replay import (  # noqa: E402
     SurgeGridRecord,
@@ -92,6 +95,57 @@ CORRIDOR_CELLS = 3
 SURGE_STRIDE_MIN = 4
 
 MANIFEST_NAME = "showcase.json"
+
+# Every real weekday this script knows how to name, so `--calm-day` takes a
+# date rather than four positional strings. Same four `build_days.py`
+# characterises, from the same measured Open-Meteo archive.
+KNOWN_DAYS: dict[str, tuple[str, str, str]] = {
+    "2026-07-15": ("Wednesday", "Mild Wednesday", "33.2 C, no rain — the easy afternoon"),
+    "2026-07-10": ("Friday", "Ordinary Friday", "34.3 C, trace rain — the reference shift"),
+    "2026-08-04": ("Tuesday", "Rainy Tuesday", "38.1 C, rain across 8 of 8 hours"),
+    "2026-06-18": ("Thursday", "Extreme-heat Thursday",
+                   "41.9 C, above 40 for three hours, rain at the dinner peak"),
+}
+
+
+def _day_tuple(iso: str, hostile: bool) -> tuple[str, str, str, str]:
+    if iso not in KNOWN_DAYS:
+        raise SystemExit(f"unknown day {iso!r}; known: {sorted(KNOWN_DAYS)}")
+    weekday, label, note = KNOWN_DAYS[iso]
+    if hostile:
+        note = f"{note}, five roads closed together"
+    return (iso, weekday, label, note)
+
+
+# Which tuning knobs are constructor arguments rather than calibration keys.
+_CTOR_KEYS = ("bar_factor", "risk_posture")
+
+
+def _run_tuned(config: dict, built, oracle, window, graph, skeleton):
+    """One shift with the tuned constants applied, then put back.
+
+    `smart.py` reads its calibration dicts by key at call time, so the
+    overrides go in place and are restored afterwards -- a rebind would leave
+    already-imported references pointing at the old dict.
+    """
+    pristine = {
+        name: copy.deepcopy(getattr(agent_cal, name))
+        for name in dir(agent_cal)
+        if name.isupper() and isinstance(getattr(agent_cal, name), dict)
+    }
+    ctor = {k: config[k] for k in _CTOR_KEYS if k in config}
+    try:
+        for name, values in pristine.items():
+            live = getattr(agent_cal, name)
+            for key in values:
+                if key in config:
+                    live[key] = config[key]
+        return rs.run_one(rs.POLICY_FACTORIES["smart"](**ctor), built, oracle, window, graph, skeleton)
+    finally:
+        for name, values in pristine.items():
+            live = getattr(agent_cal, name)
+            live.clear()
+            live.update(values)
 
 
 def _cell_minutes(result) -> dict[str, int]:
@@ -217,10 +271,42 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--window", default="reference", choices=sorted(rs.SHIFT_WINDOWS))
     parser.add_argument("--out-dir", type=Path, default=PROJECT_ROOT / "replays")
+    parser.add_argument("--agent-config", type=Path, default=None,
+                        help="JSON from scripts/tune_smart.py; records the TUNED agent as well")
+    parser.add_argument("--calm-day", default=None,
+                        help="ISO date for the ordinary shift; default is the reference Friday")
+    parser.add_argument("--chaos-day", default=None,
+                        help="ISO date for the chaotic shift; pass the SAME date as --calm-day "
+                             "to make the pair a controlled comparison (closures the only change)")
+    parser.add_argument("--suffix", default="",
+                        help="names the output files and manifest, e.g. --suffix b")
     args = parser.parse_args(argv)
+
+    # The tuned agent, if one was handed over. Recorded ALONGSIDE the shipped
+    # one rather than instead of it: the point of the comparison is that the
+    # two are the same agent with different beliefs about the same city, and
+    # replacing the shipped lane would throw away the before.
+    tuned_config: dict | None = None
+    if args.agent_config is not None:
+        payload = json.loads(args.agent_config.read_text(encoding="utf-8"))
+        tuned_config = payload.get("best_config", payload)
+        print(f"tuned agent: {json.dumps(tuned_config)}", flush=True)
 
     window = rs.SHIFT_WINDOWS[args.window]
     args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Day overrides. Naming the SAME date for both halves is the interesting
+    # case: the original pair changes the weather and the closures at once, so
+    # nothing across it isolates either. One date against itself with roads
+    # shut isolates exactly the closures.
+    global CALM_DAY, CHAOS_DAY, MANIFEST_NAME
+    if args.calm_day:
+        CALM_DAY = _day_tuple(args.calm_day, hostile=False)
+    if args.chaos_day:
+        CHAOS_DAY = _day_tuple(args.chaos_day, hostile=True)
+    file_prefix = f"showcase_{args.suffix}_" if args.suffix else "showcase_"
+    if args.suffix:
+        MANIFEST_NAME = f"showcase_{args.suffix}.json"
 
     started = time.time()
     print("Building the travel oracle once ...", flush=True)
@@ -252,6 +338,15 @@ def main(argv: list[str] | None = None) -> int:
             calm_runs[tag] = outcome
             s = _summary(outcome)
             print(f"  calm  {tag:<6} {s['mxn_h']:>6.1f} MXN/h  {s['per_hour']:>4.2f}/h  "
+                  f"{s['km']:>6.1f} km  {s['mxn_per_trip']:>5.1f} MXN/trip", flush=True)
+
+        if tuned_config:
+            outcome, _ = _run_tuned(
+                tuned_config, calm_built, oracle, window, graph, skeleton
+            )
+            calm_runs["tuned"] = outcome
+            s = _summary(outcome)
+            print(f"  calm  {'tuned':<6} {s['mxn_h']:>6.1f} MXN/h  {s['per_hour']:>4.2f}/h  "
                   f"{s['km']:>6.1f} km  {s['mxn_per_trip']:>5.1f} MXN/trip", flush=True)
 
         # ------------------------------------------------------------------
@@ -322,6 +417,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  chaos {tag:<6} {s['mxn_h']:>6.1f} MXN/h  {s['per_hour']:>4.2f}/h  "
                   f"{s['km']:>6.1f} km  {s['mxn_per_trip']:>5.1f} MXN/trip  "
                   f"met {met[tag]}/{len(closures)} closures", flush=True)
+        if tuned_config:
+            outcome, _ = _run_tuned(
+                tuned_config, chaos_with_closures, oracle, window, graph, skeleton
+            )
+            chaos_runs["tuned"] = outcome
+            met["tuned"] = _closures_met(outcome.result, closure_ids)
+            s = _summary(outcome)
+            print(f"  chaos {'tuned':<6} {s['mxn_h']:>6.1f} MXN/h  {s['per_hour']:>4.2f}/h  "
+                  f"{s['km']:>6.1f} km  {s['mxn_per_trip']:>5.1f} MXN/trip  "
+                  f"met {met['tuned']}/{len(closures)} closures", flush=True)
+
         if min(met.values()) == 0:
             print("    WARNING: one courier met NO closure — that scenario compares a hard shift "
                   "against an easy one and must not be shown as like-for-like.", flush=True)
@@ -346,8 +452,8 @@ def main(argv: list[str] | None = None) -> int:
 
             files = {}
             for tag, outcome in runs.items():
-                courier = "smart" if tag == "smart" else "fixed_threshold"
-                name = f"showcase_{key}_{tag}.json"
+                courier = {"smart": "smart", "tuned": "smart_tuned"}.get(tag, "fixed_threshold")
+                name = f"{file_prefix}{key}_{tag}.json"
                 size = write_replay(
                     args.out_dir / name,
                     build_replay(
@@ -370,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
                 "closures": n_closures,
                 "closures_met": met_map,
                 "peak_concurrent_closures": peak_n if key == "chaos" else 0,
+            "tuned_config": tuned_config,
                 "files": files,
                 "summary": {tag: _summary(out) for tag, out in runs.items()},
             })
