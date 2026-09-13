@@ -52,6 +52,7 @@ path was taken is always visible.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping, Sequence
 from datetime import date as Date
 from datetime import timedelta
@@ -706,17 +707,80 @@ def perceivable_events(
     for event in events:
         if minute < event.detectable_from_min or minute >= event.end_min:
             continue
-        anchor = _event_anchor_latlon(event, graph)
-        if anchor is None:
+        distance_km = _event_distance_km(event, graph, courier_lat, courier_lon)
+        if distance_km is None:
             # No spatial gate can be applied (degraded edge-scoped event
             # with no graph loaded) -- fail open on timing alone rather
             # than silently hiding it.
             visible.append(event)
             continue
-        distance_km = geo.great_circle_km(courier_lat, courier_lon, anchor[0], anchor[1])
         if distance_km <= event.detect_radius_km:
             visible.append(event)
     return visible
+
+
+# Per-event coordinate arrays, keyed by (graph identity, event id). Building
+# one costs a pass over the event's edges, and `perceivable_events` is called
+# once per courier per minute -- without the cache a 900-edge corridor was
+# re-walked 480 times a shift for an answer that never changes.
+_EVENT_POINTS_CACHE: dict[tuple[int, str], np.ndarray] = {}
+
+
+def _event_points(event: Event, graph: nx.MultiDiGraph | None) -> np.ndarray | None:
+    """Every point the event occupies, as an (n, 2) array of (lat, lon).
+
+    For a point event that is one row; for an edge-scoped event it is every
+    node of every closed edge.
+    """
+    if event.point_lat is not None and event.point_lon is not None:
+        return np.array([[event.point_lat, event.point_lon]], dtype=float)
+    if event.cells:
+        return np.array([geo.cell_centroid(c) for c in event.cells], dtype=float)
+    if not event.edges or graph is None:
+        return None
+
+    key = (id(graph), event.event_id)
+    cached = _EVENT_POINTS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    nodes: set[int] = set()
+    for u, v in event.edges:
+        nodes.add(u)
+        nodes.add(v)
+    points = [_node_latlon(graph, n) for n in sorted(nodes) if graph.has_node(n)]
+    if not points:
+        return None
+    array = np.array(points, dtype=float)
+    _EVENT_POINTS_CACHE[key] = array
+    return array
+
+
+def _event_distance_km(
+    event: Event, graph: nx.MultiDiGraph | None, lat: float, lon: float
+) -> float | None:
+    """Distance from (lat, lon) to the NEAREST part of `event`, in km.
+
+    Measured against the whole event, not against one representative point,
+    and that is the entire reason this function exists. `_event_anchor_latlon`
+    returns the first node of the first closed edge, which is fine for a crash
+    (a crash IS a point) and badly wrong for a corridor closure: measured on
+    the chaotic-day build, three closures placed on the smart courier's own
+    corridor were perceived by nobody, because the courier riding INTO the
+    closure was several kilometres from the far end the anchor happened to sit
+    on. A closure you cannot see while standing on it is not a detection
+    radius, it is a bug.
+
+    Returns None when no spatial gate can be applied at all.
+    """
+    points = _event_points(event, graph)
+    if points is None or not len(points):
+        return None
+    # Equirectangular approximation, which is accurate well inside a percent
+    # over a city and avoids a Python-level loop over hundreds of nodes.
+    lat_rad = math.radians(lat)
+    dy = (points[:, 0] - lat) * 110.574
+    dx = (points[:, 1] - lon) * 111.320 * math.cos(lat_rad)
+    return float(np.min(np.hypot(dy, dx)))
 
 
 def make_event(event_id: str, type: EventType, start_min: int, duration_min: int, **effect_kwargs) -> Event:
@@ -1015,3 +1079,93 @@ def corridor_from_occupancy(
     """
     ranked = sorted(cell_minutes.items(), key=lambda kv: (-kv[1], kv[0]))
     return [cell for cell, minutes in ranked[:limit] if minutes > 0]
+
+
+# The block around a closed road, in km. A closure is not only impassable
+# along its own length: the traffic it displaces congeals on the streets
+# feeding it, and that halo is what a courier actually rides into. Kept
+# deliberately SHORT -- this claims the surrounding block, not the district.
+# Anything larger would be a statement about congestion propagation that
+# nothing in this world model measures.
+CLOSURE_JAM_RADIUS_KM = 0.35
+
+
+def closure_segments(
+    event: Event, graph: nx.MultiDiGraph | None
+) -> list[list[tuple[float, float]]]:
+    """The closed roads of `event`, as drawable (lat, lon) polylines.
+
+    `Event.edges` holds OSM node-id PAIRS, which is the right storage for a
+    routing engine and useless to a map: rendering a closure from
+    `_event_anchor_latlon` drew the whole thing as one pin at the first
+    edge's `u` node, under-reporting a multi-kilometre corridor by most of
+    its length.
+
+    Uses the real OSM edge geometry where the graph carries one, so a curved
+    avenue draws as a curve rather than a chord across the blocks it bends
+    around; falls back to the straight node-to-node line otherwise. Returns
+    an empty list for an event that is genuinely a point, or when no graph
+    is loaded to resolve node ids against.
+    """
+    if not event.edges or graph is None:
+        return []
+    segments: list[list[tuple[float, float]]] = []
+    for u, v in event.edges:
+        if not (graph.has_node(u) and graph.has_node(v)):
+            continue
+        line = None
+        for _key, data in (graph.get_edge_data(u, v) or {}).items():
+            geometry = data.get("geometry")
+            if geometry is not None:
+                # OSMnx stores edge geometry as a shapely LineString in
+                # (x, y) = (lon, lat) order.
+                line = [(float(y), float(x)) for x, y in geometry.coords]
+                break
+        if line is None:
+            line = [_node_latlon(graph, u), _node_latlon(graph, v)]
+        if len(line) >= 2:
+            segments.append(line)
+    return _merge_chains(segments)
+
+
+def _merge_chains(
+    segments: list[list[tuple[float, float]]]
+) -> list[list[tuple[float, float]]]:
+    """Join polylines that share an endpoint into continuous runs.
+
+    Identical ink, far fewer objects. A corridor closure covers hundreds of
+    road edges -- measured on the chaotic day, 484 to 893 apiece -- and each
+    one handed to the map separately becomes its own vector, twice over once
+    the jam halo is drawn under it. Five such closures live at once is several
+    thousand SVG paths for what the eye reads as a handful of closed avenues.
+
+    This is a rendering concern only: nothing is dropped, simplified or
+    approximated, so a closure still draws over exactly the roads it shuts.
+    """
+    if not segments:
+        return []
+    # Endpoints are float pairs straight off the graph, so they compare
+    # exactly when they come from the same node -- no tolerance needed, and a
+    # tolerance would risk welding two roads that merely pass close.
+    remaining = [list(seg) for seg in segments]
+    by_start: dict[tuple[float, float], list[list[tuple[float, float]]]] = {}
+    for seg in remaining:
+        by_start.setdefault(seg[0], []).append(seg)
+
+    used: set[int] = set()
+    chains: list[list[tuple[float, float]]] = []
+    for seg in remaining:
+        if id(seg) in used:
+            continue
+        used.add(id(seg))
+        chain = list(seg)
+        # Walk forward while exactly one unused segment continues this one.
+        while True:
+            candidates = [c for c in by_start.get(chain[-1], []) if id(c) not in used]
+            if not candidates:
+                break
+            nxt = candidates[0]
+            used.add(id(nxt))
+            chain.extend(nxt[1:])
+        chains.append(chain)
+    return chains

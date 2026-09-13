@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "seed": 42,
+  "window": {
+    "name": "reference",
+    "label": "Reference 14:00-22:00"
+  },
+  "payout_floor_mxn": 40.0,
+  "surge_stride_min": 4,
+  "scenarios": [
+    {
+      "key": "calm",
+      "date": "2026-07-10",
+      "weekday": "Friday",
+      "label": "Ordinary Friday",
+      "note": "34.3 C, trace rain, no road closures \u2014 the shift every other figure is quoted on",
+      "conditions": {
+        "apparent_min": 29.1,
+        "apparent_max": 34.3,
+        "minutes_over_40c": 0,
+        "raining_minutes": 240,
+        "peak_rain_mm_per_hour": 0.5
+      },
+      "closures": 0,
+      "closures_met": {},
+      "peak_concurrent_closures": 0,
+      "files": {
+        "smart": "showcase_calm_smart.json",
+        "floor": "showcase_calm_floor.json"
+      },
+      "summary": {
+        "smart": {
+          "take_home": 957.9,
+          "mxn_h": 115.6,
+          "mxn_km": 7.75,
+          "km": 123.5,
+          "deliveries": 18,
+          "per_hour": 2.17,
+          "mxn_per_trip": 53.2
+        },
+        "floor": {
+          "take_home": 1195.6,
+          "mxn_h": 136.1,
+          "mxn_km": 6.91,
+          "km": 173.1,
+          "deliveries": 22,
+          "per_hour": 2.5,
+          "mxn_per_trip": 54.3
+        }
+      }
+    },
+    {
+      "key": "chaos",
+      "date": "2026-06-18",
+      "weekday": "Thursday",
+      "label": "Chaotic Thursday",
+      "note": "41.9 C, above 40 for three hours, rain at the dinner peak, five roads closed together",
+      "conditions": {
+        "apparent_min": 35.3,
+        "apparent_max": 41.9,
+        "minutes_over_40c": 153,
+        "raining_minutes": 120,
+        "peak_rain_mm_per_hour": 2.0
+      },
+      "closures": 5,
+      "closures_met": {
+        "smart": 5,
+        "floor": 5
+      },
+      "peak_concurrent_closures": 5,
+      "files": {
+        "smart": "showcase_chaos_smart.json",
+        "floor": "showcase_chaos_floor.json"
+      },
+      "summary": {
+        "smart": {
+          "take_home": 737.6,
+          "mxn_h": 89.9,
+          "mxn_km": 6.92,
+          "km": 106.6,
+          "deliveries": 16,
+          "per_hour": 1.95,
+          "mxn_per_trip": 46.1
+        },
+        "floor": {
+          "take_home": 1167.0,
+          "mxn_h": 128.2,
+          "mxn_km": 6.9,
+          "km": 169.2,
+          "deliveries": 19,
+          "per_hour": 2.09,
+          "mxn_per_trip": 61.4
+        }
+      }
+    }
+  ]
+}

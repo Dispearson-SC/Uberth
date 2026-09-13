@@ -38,6 +38,45 @@ something to show — and it lacks the per-day weather conditions and summaries.
 
 ---
 
+## 2b. The showcase pair, and the two defects building it exposed
+
+`scripts/build_showcase.py` records two scenarios — an ordinary Friday and a
+chaotic Thursday with FIVE closures shut at the same time — into
+`replays/showcase_*.json` plus a `showcase.json` manifest. These are the only
+recordings on **replay schema 3**, which adds the surge map, closure road
+geometry, and each event's end minute. They are current; everything else in
+`replays/` is not (§2).
+
+Building them surfaced two defects that had been in the world all along.
+
+**A closure was tested for perception against ONE of its points.**
+`perceivable_events` measured the courier's distance to `_event_anchor_latlon`
+— the first node of the first closed edge. A corridor closure spans
+kilometres, so a courier riding INTO the closure could be several kilometres
+from that far end and never perceive it. Measured: of five closures placed on
+the chaotic day, the smart courier perceived 2 and the fixed one 1, and all
+three it missed were the ones on its OWN corridor. Perception is now measured
+against the nearest part of the event (`_event_distance_km`, node coordinates
+cached per event). Both couriers now meet 5 of 5.
+
+This changed results, and it should be read as a world fix and not a viz fix:
+the smart courier's chaotic-day rate fell 94.3 → 89.0 MXN/h, because it now
+detours around closures it previously rode through without seeing. The fixed
+threshold was unchanged at 127.5 — it never consults perceived events, and the
+closed roads reached it through the travel oracle either way. That the calm
+day's numbers did not move at all is the check that the fix is scoped.
+
+**A corridor closure is a district, not a street.** `corridor_closure` shuts
+the shortest paths between the courier's busiest cells, and at the default 7
+cells that was 484-893 road edges apiece. Five at once painted most of the
+metro red. The showcase passes `CORRIDOR_CELLS = 3`. Nothing in `events.py`
+changed: this is a call-site choice, and the default is still 7.
+
+Related and rendering-only: `_merge_chains` joins closure polylines that share
+an endpoint. Same ink, ~7x fewer map objects.
+
+---
+
 ## 3. What the simulator now matches, and what it does not
 
 The world was recalibrated against a working courier's own figures. Four of
@@ -190,6 +229,23 @@ http://127.0.0.1:8765/src/viz/dashboard.html
   comparison this project already had to correct once.
 - **Fork** — a closure scripted into the reference recording only. Disabled,
   not silently inert, on any other scenario.
+- **Surge (or S)** — paints the app's surge map as H3 cells under the city
+  and reads the three hottest zones, each courier's own multiplier, and where
+  the Smart courier is riding when it repositions. Only cells that ever leave
+  1.00 are recorded, and only cells above 1.10 are painted: a heat map that
+  colours the whole city has said nothing. **It carries its own honesty note
+  in the panel** — this is what the app DISPLAYS; the agent repositions on
+  believed demand per cell and sees only a per-offer surge flag, so nothing
+  in the layer should be read as the agent's objective.
+  Side effect worth keeping: the layer makes the known surge defect visible.
+  At the dinner peak the hot cells sit pinned at exactly 2.50, the ceiling —
+  the bang-bang limit cycle of §6, now something a viewer can see rather than
+  something buried in a distribution table.
+- **Stops** — each delivery's two ends carry the SAME NUMBER, with the word
+  beside them: a triangle "Inicio N" at the restaurant, a circle "Final N" at
+  the customer, ringed in the colour of whichever courier it belongs to. The
+  visibility window is 45 minutes, cut from 90 because fourteen permanent
+  labels over the same few blocks made the map less readable, not more.
 - **Metrics (or M)** — a modal over the map: money, distance split into paid
   and unpaid, vehicle wear, where the shift's minutes went, offers and
   refusals bucketed by reason, plus a full trip table per courier. Everything

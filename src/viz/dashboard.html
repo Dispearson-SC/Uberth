@@ -88,6 +88,42 @@
     padding: 2px 6px !important;
   }
   .courier-tip::before { display: none !important; }
+  /* The surge read-out. Sits opposite the legend so the two never collide,
+     and stays narrow: it is a glance, not a report -- the report is in the
+     metrics modal. */
+  #surgePanel {
+    position: absolute; right: 10px; bottom: 10px; z-index: 500;
+    background: rgba(13,17,23,0.9); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 11px; font-size: 11px; color: var(--text-dim);
+    width: 252px; display: none;
+  }
+  #surgePanel.on { display: block; }
+  #surgePanel h3 {
+    margin: 0 0 6px; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-dim); font-weight: 700;
+  }
+  #surgePanel .sp-scale { display: flex; align-items: center; gap: 5px; margin-bottom: 7px; }
+  #surgePanel .sp-ramp {
+    flex: 1; height: 8px; border-radius: 4px;
+    background: linear-gradient(90deg, #ffe28a, #ffa23d, #ff6b2c, #ff2d55);
+  }
+  #surgePanel .sp-zone {
+    display: flex; align-items: center; gap: 6px; margin: 3px 0; font-variant-numeric: tabular-nums;
+  }
+  #surgePanel .sp-swatch { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
+  #surgePanel .sp-mult { font-weight: 700; color: var(--text); min-width: 38px; }
+  #surgePanel .sp-where { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #surgePanel .sp-here { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--border); }
+  #surgePanel .sp-here div { margin: 2px 0; }
+  #surgePanel .sp-move { color: var(--accent-smart); font-weight: 700; }
+  /* The line that stops a viewer inferring a causal link the decision trace
+     does not support. It is small, but it is not optional. */
+  #surgePanel .sp-note {
+    margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--border);
+    color: #6b7891; font-size: 10px; line-height: 1.35;
+  }
+  #surgeBtn.active { background: rgba(255,107,44,0.18); border-color: #ff6b2c; color: #ff9a5c; }
+
   #netBadge {
     position: absolute; right: 10px; top: 10px; z-index: 500;
     background: rgba(255,204,77,0.15); border: 1px solid var(--warn);
@@ -338,6 +374,16 @@
   .mtable-scroll { max-height: 280px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
   .mempty { padding: 14px; color: var(--text-dim); font-size: 12px; font-style: italic; }
   #metricsBtn.active { background: rgba(77,163,255,0.18); border-color: var(--accent-smart); color: var(--accent-smart); }
+
+  /* The "Inicio 3" / "Final 3" tag beside a stop pin. Deliberately quiet: up
+     to twenty of these can be on screen at once inside the visibility window,
+     so they have to read as annotation rather than compete with the map. */
+  .leaflet-tooltip.stop-tip {
+    background: rgba(11,20,32,0.82); border: none; box-shadow: none;
+    color: #c9d4e8; font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
+    padding: 1px 4px; border-radius: 3px; white-space: nowrap;
+  }
+  .leaflet-tooltip.stop-tip::before { display: none; }
 </style>
 </head>
 <body>
@@ -357,6 +403,7 @@
         <canvas id="canvasMap"></canvas>
         <div id="netBadge">Offline map: showing a coordinate plot (no tiles)</div>
         <div id="legend"></div>
+        <div id="surgePanel"></div>
       </div>
     </div>
 
@@ -389,6 +436,9 @@
       </select>
       <span id="eventTicker"></span>
       <select id="daySelect" title="Which recorded day to play. Every one is real measured Monterrey weather; the hostile toggle adds road closures to whichever day is showing."></select>
+      <button id="surgeBtn" title="Paint the app's surge map under the city and read the hot zones as they move (S)">
+        &#128293; Surge
+      </button>
       <button id="metricsBtn" title="Open the full metric read for both couriers over the map (M)">
         &#128202; Metrics
       </button>
@@ -476,6 +526,87 @@
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
+  // A stop marker: the shape says which end of the job it is, the number says
+  // WHICH job, and the ring says which courier. All three are needed -- with
+  // two couriers working the same city, shape and colour alone cannot tell
+  // "the Smart courier's third pickup" from "the Fixed courier's third".
+  const PICKUP_FILL = "#3ddc84";
+  const DROPOFF_FILL = "#4da3ff";
+
+  function stopIconSVG(kind, n, ringColor) {
+    const fill = kind === "pickup" ? PICKUP_FILL : DROPOFF_FILL;
+    const ring = ringColor || "#0d1117";
+    const label = n == null ? "" : String(n);
+    // Two-digit numbers need to shrink or they overflow the shape.
+    const fs = label.length > 1 ? 8.5 : 10;
+    const body = kind === "pickup"
+      // A triangle's centroid sits low, so the text baseline is pushed down
+      // to stay inside the ink rather than on the apex.
+      ? `<polygon points="12,2 22,20.5 2,20.5" fill="${fill}" stroke="${ring}" stroke-width="2"
+           stroke-linejoin="round"/>
+         <text x="12" y="18.5" text-anchor="middle" font-size="${fs}" font-weight="700"
+           font-family="monospace" fill="#0b1420">${label}</text>`
+      : `<circle cx="12" cy="12" r="9.5" fill="${fill}" stroke="${ring}" stroke-width="2"/>
+         <text x="12" y="15.5" text-anchor="middle" font-size="${fs}" font-weight="700"
+           font-family="monospace" fill="#0b1420">${label}</text>`;
+    return `<svg width="24" height="24" viewBox="0 0 24 24">${body}</svg>`;
+  }
+
+  function stopSideLabel(kind, n) {
+    const word = kind === "pickup" ? "Inicio" : "Final";
+    return n == null ? word : `${word} ${n}`;
+  }
+
+  // --- surge colour scale ---------------------------------------------------
+  // Anchored on what the multipliers MEAN rather than on the range they
+  // happen to span: 1.0 is the normal fare and gets no ink at all, because a
+  // heat map that paints the whole city has told you nothing. Colour starts
+  // where a courier would start caring.
+  const SURGE_FLOOR = 1.10;   // below this: invisible
+  const SURGE_STOPS = [
+    [1.10, [255, 226, 138], 0.16],
+    [1.40, [255, 162, 61], 0.30],
+    [1.80, [255, 107, 44], 0.44],
+    [2.20, [255, 45, 85], 0.58],
+  ];
+
+  function surgeStyleFor(value) {
+    if (!(value > SURGE_FLOOR)) return { color: "#000000", opacity: 0 };
+    let lo = SURGE_STOPS[0], hi = SURGE_STOPS[SURGE_STOPS.length - 1];
+    for (let i = 0; i < SURGE_STOPS.length - 1; i++) {
+      if (value >= SURGE_STOPS[i][0] && value <= SURGE_STOPS[i + 1][0]) {
+        lo = SURGE_STOPS[i]; hi = SURGE_STOPS[i + 1];
+        break;
+      }
+    }
+    const span = hi[0] - lo[0];
+    const t = span > 0 ? clamp((value - lo[0]) / span, 0, 1) : 1;
+    const rgb = lo[1].map((c, i) => Math.round(c + (hi[1][i] - c) * t));
+    const opacity = lo[2] + (hi[2] - lo[2]) * t;
+    return { color: `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`, opacity };
+  }
+
+  function surgeSwatch(value) {
+    const s = surgeStyleFor(value);
+    // The panel swatch shows the colour at full strength: at 0.16 alpha over
+    // a dark card it would be invisible, and the point of the swatch is to
+    // let someone match a row to a patch on the map.
+    return s.opacity > 0 ? s.color : "#3a4560";
+  }
+
+  // A cell id is not a place. Naming the hot zone by the nearest thing the
+  // recording actually knows about -- a courier standing in it -- is the
+  // most this data supports, so the panel says "where" only when it can.
+  function surgeCellShortId(cell) {
+    if (!cell) return "?";
+    // An H3 id is padded to a fixed width with trailing 'f's, so the LAST
+    // characters are identical on every cell in the city -- the first cut of
+    // this labelled every hot zone "ffffff". The distinguishing digits sit
+    // just before that padding.
+    const trimmed = cell.replace(/f+$/, "");
+    return trimmed.slice(-4) || cell.slice(0, 4);
+  }
+
   function fmtMinute(absMinute) {
     const m = ((absMinute % 1440) + 1440) % 1440;
     const hh = String(Math.floor(m / 60)).padStart(2, "0");
@@ -498,8 +629,19 @@
   function indexReplay(doc) {
     const courierId = doc.policy_names[0];
     const posByMinute = new Map();
-    const markers = []; // {minute, kind: 'pickup'|'dropoff', lat, lon, order_id}
+    const markers = []; // {minute, kind: 'pickup'|'dropoff', lat, lon, order_id, n}
     const trips = []; // completed deliveries, one entry per DeliveryRecord, in delivered_at_min order
+    // Order id -> a short 1-based number, assigned in the sequence the courier
+    // ACCEPTED the jobs. The order ids themselves (ORD-2026-07-10-000011) are
+    // unreadable on a map pin, and the point of the pin is to let someone pair
+    // a start with its own end at a glance: both shapes of a pair carry the
+    // same number, so pairing is a look rather than a string comparison.
+    const orderNumber = new Map();
+    function numberFor(orderId) {
+      if (!orderId) return null;
+      if (!orderNumber.has(orderId)) orderNumber.set(orderId, orderNumber.size + 1);
+      return orderNumber.get(orderId);
+    }
     let lastDecision = null;
     let pendingAcceptOrderId = null;
     let prevActivity = null;
@@ -526,14 +668,21 @@
         lastDecision = decision;
         if (decision.action === "accept" && decision.order_id) {
           pendingAcceptOrderId = decision.order_id;
+          numberFor(decision.order_id);
         }
       }
 
       if (c.activity === "waiting_kitchen" && prevActivity !== "waiting_kitchen") {
-        markers.push({ minute: frame.minute, kind: "pickup", lat: c.lat, lon: c.lon, order_id: pendingAcceptOrderId });
+        markers.push({
+          minute: frame.minute, kind: "pickup", lat: c.lat, lon: c.lon,
+          order_id: pendingAcceptOrderId, n: numberFor(pendingAcceptOrderId),
+        });
       }
       if (c.delivered) {
-        markers.push({ minute: frame.minute, kind: "dropoff", lat: c.lat, lon: c.lon, order_id: c.delivered.order_id });
+        markers.push({
+          minute: frame.minute, kind: "dropoff", lat: c.lat, lon: c.lon,
+          order_id: c.delivered.order_id, n: numberFor(c.delivered.order_id),
+        });
         // `c.delivered` already IS the DeliveryRecord (order_id, accepted_at_min,
         // delivered_at_min, payout_mxn, tip_mxn, surge_locked, km, minutes,
         // kitchen_wait_minutes) -- no reshaping needed, just keep it as-is.
@@ -559,8 +708,83 @@
     doc._maxMinute = minutesSorted[minutesSorted.length - 1];
     doc._posByMinute = posByMinute;
     doc._markers = markers;
+    doc._orderNumber = orderNumber;
     doc._trips = trips.sort((a, b) => a.delivered_at_min - b.delivered_at_min);
+    indexSurge(doc);
     return doc;
+  }
+
+  // The surge layer, schema 3 onward. Absent on every recording built before
+  // it existed, which is why every read of `doc._surge` is null-guarded
+  // rather than assumed: an old replay must still play, just without the
+  // heat map.
+  function indexSurge(doc) {
+    const g = doc.surge_grid;
+    if (!g || !Array.isArray(g.cells) || !g.cells.length || !g.minutes.length) {
+      doc._surge = null;
+      return;
+    }
+    const series = new Map();
+    const geom = [];
+    g.cells.forEach((cell, i) => {
+      series.set(cell, g.values[i]);
+      geom.push({ cell, boundary: g.boundaries[i] });
+    });
+    const first = g.minutes[0];
+    const stride = g.minutes.length > 1 ? (g.minutes[1] - first) : 1;
+    const last = g.minutes.length - 1;
+    doc._surge = {
+      geom, series, minutes: g.minutes, stride,
+      // Nearest recorded sample, not an interpolation. Surge is recorded
+      // every few minutes because that is the resolution the mechanism has;
+      // smoothing between samples would invent a curve nothing measured.
+      indexAt(minute) {
+        return clamp(Math.round((minute - first) / stride), 0, last);
+      },
+      valueAt(cell, idx) {
+        const s = series.get(cell);
+        return s ? s[idx] : 1.0;
+      },
+      boundaryOf(cell) {
+        const hit = geom.find(x => x.cell === cell);
+        return hit ? hit.boundary : null;
+      },
+      // The hottest cells at one sample, biggest first.
+      hottest(idx, n) {
+        const rows = [];
+        for (const { cell } of geom) {
+          const v = this.valueAt(cell, idx);
+          if (v > SURGE_FLOOR) rows.push({ cell, value: v });
+        }
+        rows.sort((x, y) => y.value - x.value);
+        return rows.slice(0, n);
+      },
+    };
+  }
+
+  // Which surge cell a point falls in. The grid is a set of H3 hexagons and
+  // the replay stores only their rings, so this is a plain point-in-polygon
+  // over at most a couple of hundred small shapes -- cheap, and it avoids
+  // shipping an H3 library to answer one question.
+  function pointInRing(lat, lon, ring) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [yi, xi] = ring[i], [yj, xj] = ring[j];
+      if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  function surgeUnder(surge, lat, lon, idx) {
+    if (!surge) return null;
+    for (const { cell, boundary } of surge.geom) {
+      if (pointInRing(lat, lon, boundary)) {
+        return { cell, value: surge.valueAt(cell, idx) };
+      }
+    }
+    return null;
   }
 
   // State at an exact integer minute, clamped to the recorded range (frozen
@@ -610,11 +834,93 @@
 
     const trails = new Map();   // laneKey -> polyline
     const couriers = new Map(); // laneKey -> circleMarker
+    // Layer order is deliberate and is the reading order of the map: the
+    // surge field is the ground everything else happens on, then the closed
+    // roads cut through it, then the courier's own path, then the pins, then
+    // the incident markers on top. Leaflet stacks in creation order.
+    const surgeLayer = L.layerGroup().addTo(map);
+    const closureLayer = L.layerGroup().addTo(map);
+    const targetLayer = L.layerGroup().addTo(map);
     const markerLayer = L.layerGroup().addTo(map);
     const eventLayer = L.layerGroup().addTo(map);
 
+    // Surge cells are created ONCE and then only restyled. Rebuilding 127
+    // polygons on every playback tick made the map stutter at 20x; setting
+    // an SVG fill on the same 127 does not.
+    const surgeCells = new Map(); // cell id -> polygon
+
+    // The jam halo is a real distance on the ground, so its width in PIXELS
+    // has to follow the zoom. A fixed pixel width read as a one-kilometre
+    // smear across the metro at city zoom and as a hairline once you zoomed
+    // into the street it was supposed to describe.
+    const haloLines = [];
+    function jamHaloPx(km) {
+      const lat = map.getCenter().lat;
+      const metresPerPx =
+        (40075016.686 * Math.abs(Math.cos(lat * Math.PI / 180))) / Math.pow(2, map.getZoom() + 8);
+      return clamp((km * 1000 / metresPerPx) * 2, 5, 44);
+    }
+    map.on("zoomend", () => {
+      for (const [line, km] of haloLines) line.setStyle({ weight: jamHaloPx(km) });
+    });
+
     return {
       kind: "leaflet",
+      setSurgeGeometry(cells) {
+        surgeLayer.clearLayers();
+        surgeCells.clear();
+        for (const c of cells) {
+          const poly = L.polygon(c.boundary, {
+            stroke: false, fillColor: "#000000", fillOpacity: 0,
+            interactive: false,
+          }).addTo(surgeLayer);
+          surgeCells.set(c.cell, poly);
+        }
+      },
+      styleSurge(styleFor) {
+        for (const [cell, poly] of surgeCells) {
+          const s = styleFor(cell);
+          poly.setStyle({ fillColor: s.color, fillOpacity: s.opacity });
+        }
+      },
+      setSurgeVisible(on) {
+        if (on) map.addLayer(surgeLayer); else map.removeLayer(surgeLayer);
+      },
+      clearClosures() { closureLayer.clearLayers(); haloLines.length = 0; },
+      addClosure(segments, jamRadiusKm, label) {
+        for (const seg of segments) {
+          // The jam halo first, as a fat translucent casing under the line,
+          // so the closed road reads as "this block is a mess" rather than
+          // as a hairline nobody notices.
+          if (jamRadiusKm) {
+            const halo = L.polyline(seg, {
+              color: "#ff6b5a", weight: jamHaloPx(jamRadiusKm),
+              opacity: 0.18, lineCap: "round", lineJoin: "round", interactive: false,
+            }).addTo(closureLayer);
+            haloLines.push([halo, jamRadiusKm]);
+          }
+          L.polyline(seg, {
+            color: "#ff4d3d", weight: 2.5, opacity: 0.95, dashArray: "6 4", lineCap: "round",
+          }).addTo(closureLayer).bindTooltip(label);
+        }
+      },
+      clearTarget() { targetLayer.clearLayers(); },
+      setTarget(fromLatLon, boundary, label, color) {
+        if (boundary && boundary.length) {
+          L.polygon(boundary, {
+            color, weight: 2.5, opacity: 0.95, fillColor: color, fillOpacity: 0.14,
+            dashArray: "5 4", interactive: false,
+          }).addTo(targetLayer);
+        }
+        if (fromLatLon && boundary && boundary.length) {
+          const mid = boundary.reduce(
+            (acc, p) => [acc[0] + p[0] / boundary.length, acc[1] + p[1] / boundary.length], [0, 0]
+          );
+          L.polyline([fromLatLon, mid], {
+            color, weight: 2, opacity: 0.8, dashArray: "4 6", interactive: false,
+          }).addTo(targetLayer).bindTooltip(label);
+        }
+      },
       setTrail(laneKey, points, color) {
         if (!points.length) return;
         let line = trails.get(laneKey);
@@ -645,14 +951,21 @@
         }
       },
       clearPickupDropoff() { markerLayer.clearLayers(); },
-      addPickupDropoff(lat, lon, kind, label) {
-        const color = kind === "pickup" ? "#3ddc84" : "#4da3ff";
-        const shape = kind === "pickup" ? "triangle" : "square";
-        const html = shape === "triangle"
-          ? `<div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:11px solid ${color};"></div>`
-          : `<div style="width:9px;height:9px;background:${color};border:1px solid #0d1117;"></div>`;
-        const icon = L.divIcon({ html, className: "", iconSize: [12, 12] });
-        L.marker([lat, lon], { icon, title: label }).addTo(markerLayer).bindTooltip(label);
+      addPickupDropoff(lat, lon, kind, label, n, laneColor) {
+        const icon = L.divIcon({
+          html: stopIconSVG(kind, n, laneColor),
+          className: "", iconSize: [24, 24], iconAnchor: [12, 12],
+        });
+        // The word beside the shape, not just the shape. A triangle only means
+        // "start" to someone who has already read the legend, and the person
+        // this gets demoed to has not. A marker can hold ONE Leaflet tooltip,
+        // so the permanent tag takes it and the full order id rides on the
+        // native `title` attribute for hover.
+        L.marker([lat, lon], { icon, title: label })
+          .addTo(markerLayer)
+          .bindTooltip(stopSideLabel(kind, n), {
+            permanent: true, direction: "right", offset: [10, 0], className: "stop-tip",
+          });
       },
       clearEvents() { eventLayer.clearLayers(); },
       addEvent(lat, lon, kind, label) {
@@ -678,6 +991,11 @@
     let couriers = new Map();
     let pickupDropoffs = [];
     let events = [];
+    let surgeGeom = [];       // [{cell, boundary}]
+    let surgeStyle = null;    // cell -> {color, opacity}
+    let surgeVisible = true;
+    let closures = [];        // [{segments, jamRadiusKm}]
+    let target = null;        // {from, boundary, color}
 
     function resize() {
       const rect = canvas.parentElement.getBoundingClientRect();
@@ -703,6 +1021,54 @@
       ctx.fillStyle = "#3a4560";
       ctx.fillText("offline coordinate plot (no map tiles)", 10, 16);
 
+      if (surgeVisible && surgeStyle) {
+        for (const c of surgeGeom) {
+          const s = surgeStyle(c.cell);
+          if (!s || s.opacity <= 0) continue;
+          ctx.fillStyle = s.color; ctx.globalAlpha = s.opacity;
+          ctx.beginPath();
+          c.boundary.forEach((p, i) => {
+            const [x, y] = project(p[0], p[1]);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          });
+          ctx.closePath(); ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      for (const cl of closures) {
+        for (const seg of cl.segments) {
+          if (cl.jamRadiusKm) {
+            ctx.strokeStyle = "#ff6b5a"; ctx.globalAlpha = 0.16;
+            ctx.lineWidth = Math.max(10, cl.jamRadiusKm * 34);
+            ctx.lineCap = "round"; ctx.lineJoin = "round";
+            ctx.beginPath();
+            seg.forEach((p, i) => {
+              const [x, y] = project(p[0], p[1]);
+              if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            });
+            ctx.stroke(); ctx.globalAlpha = 1;
+          }
+          ctx.strokeStyle = "#ff4d3d"; ctx.lineWidth = 3; ctx.setLineDash([7, 5]);
+          ctx.beginPath();
+          seg.forEach((p, i) => {
+            const [x, y] = project(p[0], p[1]);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          });
+          ctx.stroke(); ctx.setLineDash([]);
+        }
+      }
+
+      if (target && target.boundary && target.boundary.length) {
+        ctx.strokeStyle = target.color; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        target.boundary.forEach((p, i) => {
+          const [x, y] = project(p[0], p[1]);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+      }
+
       for (const [, t] of trails) {
         ctx.strokeStyle = t.color; ctx.globalAlpha = 0.55; ctx.lineWidth = 2.5;
         ctx.beginPath();
@@ -716,12 +1082,26 @@
 
       for (const m of pickupDropoffs) {
         const [x, y] = project(m.lat, m.lon);
-        ctx.fillStyle = m.kind === "pickup" ? "#3ddc84" : "#4da3ff";
+        ctx.fillStyle = m.kind === "pickup" ? PICKUP_FILL : DROPOFF_FILL;
+        ctx.strokeStyle = m.ringColor || "#0d1117";
+        ctx.lineWidth = 1.5;
         if (m.kind === "pickup") {
-          ctx.beginPath(); ctx.moveTo(x, y - 5); ctx.lineTo(x - 5, y + 4); ctx.lineTo(x + 5, y + 4); ctx.closePath(); ctx.fill();
+          ctx.beginPath();
+          ctx.moveTo(x, y - 8); ctx.lineTo(x - 8, y + 6); ctx.lineTo(x + 8, y + 6);
+          ctx.closePath(); ctx.fill(); ctx.stroke();
         } else {
-          ctx.fillRect(x - 3, y - 3, 6, 6);
+          ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
         }
+        if (m.n != null) {
+          ctx.fillStyle = "#0b1420";
+          ctx.font = "bold 9px monospace";
+          ctx.textAlign = "center";
+          ctx.fillText(String(m.n), x, m.kind === "pickup" ? y + 4.5 : y + 3.5);
+          ctx.textAlign = "start";
+        }
+        ctx.fillStyle = "#c9d4e8";
+        ctx.font = "bold 9px monospace";
+        ctx.fillText(stopSideLabel(m.kind, m.n), x + 11, y + 3);
       }
 
       for (const e of events) {
@@ -744,10 +1124,23 @@
 
     return {
       kind: "canvas",
+      setSurgeGeometry(cells) { surgeGeom = cells; redraw(); },
+      styleSurge(styleFor) { surgeStyle = styleFor; redraw(); },
+      setSurgeVisible(on) { surgeVisible = on; redraw(); },
+      clearClosures() { closures = []; },
+      addClosure(segments, jamRadiusKm) { closures.push({ segments, jamRadiusKm }); redraw(); },
+      clearTarget() { target = null; },
+      setTarget(fromLatLon, boundary, label, color) {
+        target = { from: fromLatLon, boundary, color };
+        redraw();
+      },
       setTrail(laneKey, points, color) { trails.set(laneKey, { points, color }); redraw(); },
       setCourier(laneKey, lat, lon, color, label) { couriers.set(laneKey, { lat, lon, color, label }); redraw(); },
       clearPickupDropoff() { pickupDropoffs = []; },
-      addPickupDropoff(lat, lon, kind) { pickupDropoffs.push({ lat, lon, kind }); redraw(); },
+      addPickupDropoff(lat, lon, kind, label, n, ringColor) {
+        pickupDropoffs.push({ lat, lon, kind, n, ringColor });
+        redraw();
+      },
       clearEvents() { events = []; },
       addEvent(lat, lon, kind, label) { events.push({ lat, lon, kind, label }); redraw(); },
       fitAll(points) {
@@ -786,6 +1179,41 @@
     }).join("");
   }
 
+  // The showcase manifest lists two scenarios by key; the day machinery wants
+  // one entry with a `normal` and a `hostile` variant. The two are the same
+  // idea, so this is a rename rather than a translation -- with ONE honest
+  // difference recorded in the label: unlike a day's own hostile variant,
+  // these two are different DATES, so the chaotic one differs in weather as
+  // well as in closed roads and is not a controlled comparison.
+  function showcaseAsDayEntry(doc) {
+    const byKey = {};
+    for (const s of (doc && doc.scenarios) || []) byKey[s.key] = s;
+    const calm = byKey.calm, chaos = byKey.chaos;
+    if (!calm || !chaos) return null;
+    return {
+      date: "showcase",
+      weekday: "Demo",
+      label: "Demo pair",
+      note: `${calm.note} — vs — ${chaos.note}`,
+      conditions: calm.conditions,
+      variantLabel: {
+        normal: `${calm.label}, ${calm.date}`,
+        hostile: `${chaos.label}, ${chaos.date}, ${chaos.peak_concurrent_closures} roads shut at once`,
+      },
+      variants: {
+        normal: {
+          files: calm.files, summary: calm.summary,
+          closures: 0, closures_met: {}, conditions: calm.conditions,
+        },
+        hostile: {
+          files: chaos.files, summary: chaos.summary,
+          closures: chaos.closures, closures_met: chaos.closures_met || {},
+          conditions: chaos.conditions,
+        },
+      },
+    };
+  }
+
   async function tryAutoFetch() {
     const results = {};
     try {
@@ -800,6 +1228,21 @@
     try {
       const res = await fetch("../../replays/days.json");
       if (res.ok) dayManifest = await res.json();
+    } catch (e) { /* optional */ }
+    // The showcase pair from scripts/build_showcase.py, folded into the same
+    // day machinery rather than given a parallel one: "ordinary" and
+    // "chaotic" ARE a normal and a hostile variant, so the scenario toggle
+    // already means exactly the right thing for them.
+    try {
+      const res = await fetch("../../replays/showcase.json");
+      if (res.ok) {
+        const entry = showcaseAsDayEntry(await res.json());
+        if (entry) {
+          if (!dayManifest) dayManifest = { days: [] };
+          if (!Array.isArray(dayManifest.days)) dayManifest.days = [];
+          dayManifest.days = [entry, ...dayManifest.days.filter(d => d.date !== entry.date)];
+        }
+      }
     } catch (e) { /* optional */ }
     // The duel pair is fetched separately and its failure is swallowed: it is
     // an extra scenario, not a dependency.
@@ -888,6 +1331,12 @@
     playing: false,
     timer: null,
     mapView: null,
+    // The surge layer starts ON: the hot zones are the thing this view was
+    // extended to show, and a feature nobody switches on is a feature nobody
+    // sees. It still paints nothing on a recording that carries no grid.
+    surgeOn: true,
+    _surgeSource: null, // the grid currently built into the map view
+    _surgeIdx: -1,      // last styled sample, so playback does not restyle 127 polygons per frame
   };
 
   // Both lanes move together when the scenario changes, because the point of
@@ -918,9 +1367,30 @@
     const tag = parts[parts.length - 1];
     const entry = dayEntry(app.day);
     const who = tag === "smart" ? "SMART" : "FIXED THRESHOLD (40 MXN floor)";
+    // A scenario that names itself per variant (the showcase pair) says so;
+    // an ordinary day is one date whose two variants differ only by closures.
+    if (entry && entry.variantLabel && entry.variantLabel[app.scenario]) {
+      return `${who} — ${entry.variantLabel[app.scenario]}`;
+    }
     const when = entry ? `${entry.label}` : app.day;
-    return `${who} — ${when}${app.scenario === "hostile" ? ", 5 closures" : ""}`;
+    const closures = entry && entry.variants && entry.variants.hostile
+      ? entry.variants.hostile.closures : 5;
+    return `${who} — ${when}${app.scenario === "hostile" ? `, ${closures} closures` : ""}`;
   }
+  // What the header says about the scenario on screen. A scenario that names
+  // its own variants (the showcase pair) uses those names; an ordinary day is
+  // one date shown either as it was or with its roads closed.
+  function scenarioStatusText(iso) {
+    const entry = dayEntry(iso);
+    if (!entry) return iso;
+    if (entry.variantLabel && entry.variantLabel[app.scenario]) {
+      return entry.variantLabel[app.scenario];
+    }
+    const closures = ((entry.variants || {}).hostile || {}).closures || 5;
+    return `${entry.label} — ${iso}, ` +
+      (app.scenario === "hostile" ? `${closures} road closures` : "as it was");
+  }
+
   function laneColor(key) {
     if (LANE_COLORS[key]) return LANE_COLORS[key];
     return String(key).endsWith("smart") ? LANE_COLORS.smart : LANE_COLORS.fixed;
@@ -1014,7 +1484,14 @@
     } else {
       const trace = d.trace;
       const actionClass = d.action === "accept" ? "accept" : (d.action === "reject" ? "reject" : "other");
-      const headLine = `${d.action.toUpperCase()}${d.order_id ? " " + d.order_id : ""} | THRESHOLD ${trace.threshold_mxn_per_hour.toFixed(1)} MXN/h | BINDING ${trace.binding_constraint}`;
+      // A reposition is about a PLACE, so it names one. Without this the
+      // head line read "REPOSITION" and the destination existed only inside
+      // the prose summary, which is also the only place the map arrow could
+      // be checked against.
+      const subject = d.order_id
+        ? " " + d.order_id
+        : (d.target_cell ? " &#8594; " + surgeCellShortId(d.target_cell) : "");
+      const headLine = `${d.action.toUpperCase()}${subject} | THRESHOLD ${trace.threshold_mxn_per_hour.toFixed(1)} MXN/h | BINDING ${trace.binding_constraint}`;
       const stale = !state.decision
         ? `<div class="stale-note">most recent decision &mdash; made at minute ${trace.minute} (${fmtMinute(trace.minute)})</div>` : "";
       inner = `
@@ -1165,11 +1642,19 @@
     // Pickup / dropoff markers within a trailing visibility window, so the
     // map does not fill up with every stop from eight hours ago.
     mv.clearPickupDropoff();
-    const WINDOW_MIN = 90;
-    for (const doc of [a, b]) {
+    // How far back the stops stay on the map. Every pin now carries a
+    // permanent "Inicio 11" / "Final 11" tag, and at 90 minutes that was
+    // fourteen tags stacked over the same few blocks -- the labels that were
+    // added to make the map readable were making it unreadable. Forty-five
+    // minutes is roughly one delivery cycle per courier.
+    const WINDOW_MIN = 45;
+    for (const [doc, key] of [[a, laneAKey()], [b, laneBKey()]]) {
+      const ring = laneColor(key);
+      const who = laneLabel(key).split(" ")[0];
       for (const m of doc._markers) {
         if (m.minute <= app.currentMinute && m.minute >= app.currentMinute - WINDOW_MIN) {
-          mv.addPickupDropoff(m.lat, m.lon, m.kind, `${m.kind} ${m.order_id || ""}`);
+          const title = `${stopSideLabel(m.kind, m.n)} · ${who} · ${m.order_id || "?"}`;
+          mv.addPickupDropoff(m.lat, m.lon, m.kind, title, m.n, ring);
         }
       }
     }
@@ -1188,13 +1673,127 @@
       }
     }
     let tickerText = "";
+    mv.clearClosures();
+    let liveClosures = 0;
     for (const [, e] of seen) {
+      const segments = e.segments || [];
+      // A closure is drawn along the roads it actually shuts, and only while
+      // it is still shut. Before this the whole corridor was one warning pin
+      // at its first node, which under-reported five closed roads as five
+      // dots and made the chaotic day look like an ordinary one.
+      const stillOn = e.ends_minute == null || app.currentMinute < e.ends_minute;
+      if (segments.length && stillOn) {
+        const until = e.ends_minute == null ? "" : ` until ${fmtMinute(e.ends_minute)}`;
+        mv.addClosure(segments, e.jam_radius_km,
+          `${e.kind.replace(/_/g, " ")} — perceived ${fmtMinute(e.perceived_minute)}${until}`);
+        liveClosures++;
+      }
+      // The pin stays regardless. The roads say WHERE the disruption is; the
+      // pin says an incident was perceived at all, and dropping it for
+      // anything that happens to carry edges would quietly hide a crash.
       mv.addEvent(e.lat, e.lon, e.kind, `${e.kind} (perceived at minute ${e.perceived_minute})`);
       if (e.perceived_minute === Math.floor(app.currentMinute)) {
         tickerText = `Just perceived: ${e.kind.replace(/_/g, " ")}`;
       }
     }
+    if (liveClosures > 1) {
+      tickerText = `${liveClosures} roads closed at once` + (tickerText ? ` · ${tickerText}` : "");
+    }
     document.getElementById("eventTicker").textContent = tickerText;
+
+    renderSurge(mv, a, b, aState, bState);
+  }
+
+  // The surge field under the city, the courier's own target when it is
+  // moving, and the read-out that ties the two together.
+  function renderSurge(mv, a, b, aState, bState) {
+    const panel = document.getElementById("surgePanel");
+    // Both lanes are the same world by construction, so either one's grid is
+    // THE grid; lane B only answers when lane A is a recording old enough
+    // not to have one.
+    const surge = a._surge || b._surge;
+
+    if (!surge) {
+      mv.setSurgeGeometry([]);
+      mv.clearTarget();
+      app._surgeSource = null;
+      panel.classList.remove("on");
+      return;
+    }
+    if (app._surgeSource !== surge) {
+      mv.setSurgeGeometry(surge.geom);
+      app._surgeSource = surge;
+      app._surgeIdx = -1;
+    }
+    mv.setSurgeVisible(app.surgeOn);
+
+    const idx = surge.indexAt(app.currentMinute);
+    if (idx !== app._surgeIdx) {
+      mv.styleSurge(cell => surgeStyleFor(surge.valueAt(cell, idx)));
+      app._surgeIdx = idx;
+    }
+
+    // Where the Smart courier is heading, when it decided to head anywhere.
+    // `target_cell` is only ever set on a REPOSITION, which is the one
+    // decision that is about a place rather than about an order.
+    mv.clearTarget();
+    const decision = aState.discrete.lastDecision;
+    // Gated on the courier STILL repositioning, not merely on the last
+    // decision having been one. `lastDecision` persists for the rest of the
+    // shift, so without the activity check the arrow would keep pointing at
+    // a cell the courier reached an hour ago.
+    const moving = aState.discrete.activity === "repositioning"
+      && decision && decision.action === "reposition" && decision.target_cell;
+    if (moving) {
+      const boundary = surge.boundaryOf(decision.target_cell);
+      mv.setTarget([aState.lat, aState.lon], boundary,
+        `heading to ${surgeCellShortId(decision.target_cell)}`, laneColor(laneAKey()));
+    }
+
+    panel.classList.toggle("on", app.surgeOn);
+    if (!app.surgeOn) return;
+
+    const hot = surge.hottest(idx, 3);
+    const aHere = surgeUnder(surge, aState.lat, aState.lon, idx);
+    const bHere = surgeUnder(surge, bState.lat, bState.lon, idx);
+    const aName = laneLabel(laneAKey()).split(" ")[0];
+
+    const zones = hot.length
+      ? hot.map(z => {
+          const who = [];
+          if (aHere && aHere.cell === z.cell) who.push(aName);
+          if (bHere && bHere.cell === z.cell) who.push("FIXED");
+          return `<div class="sp-zone">
+            <span class="sp-swatch" style="background:${surgeSwatch(z.value)}"></span>
+            <span class="sp-mult">${z.value.toFixed(2)}x</span>
+            <span class="sp-where">${who.length ? who.join(" + ") + " here" : surgeCellShortId(z.cell)}</span>
+          </div>`;
+        }).join("")
+      : `<div class="sp-zone" style="color:#6b7891">nothing above ${SURGE_FLOOR.toFixed(2)}x right now</div>`;
+
+    const standing = v => v == null ? "off the surge grid" : `${v.toFixed(2)}x where it stands`;
+    const movingLine = moving
+      ? `<div class="sp-move">&#8594; riding to ${surgeCellShortId(decision.target_cell)}</div>`
+      : "";
+
+    panel.innerHTML = `
+      <h3>Surge &mdash; the app's own map</h3>
+      <div class="sp-scale">
+        <span>${SURGE_FLOOR.toFixed(2)}x</span><span class="sp-ramp"></span><span>2.20x+</span>
+      </div>
+      ${zones}
+      <div class="sp-here">
+        <div><b>${aName}</b> &middot; ${standing(aHere && aHere.value)}</div>
+        <div><b>FIXED</b> &middot; ${standing(bHere && bHere.value)}</div>
+        ${movingLine}
+      </div>
+      <div class="sp-note">
+        This is what the app displays, not what the agent optimises. It
+        repositions on its own believed DEMAND per cell and sees only a
+        per-offer surge flag &mdash; read the Why panel for the move it
+        actually made.
+      </div>
+    `;
   }
 
   function renderLegend() {
@@ -1203,9 +1802,11 @@
     document.getElementById("legend").innerHTML = `
       <div class="row"><span class="dot" style="background:${laneAColor}"></span>${laneALabel} courier</div>
       <div class="row"><span class="dot" style="background:${laneColor(laneBKey())}"></span>FIXED courier</div>
-      <div class="row"><span class="dot" style="background:#3ddc84;border-radius:2px;clip-path:polygon(50% 0,0 100%,100% 100%)"></span>Pickup (restaurant)</div>
-      <div class="row"><span class="dot" style="background:#4da3ff;border-radius:2px"></span>Dropoff (customer)</div>
+      <div class="row"><span class="dot" style="background:${PICKUP_FILL};clip-path:polygon(50% 0,0 100%,100% 100%)"></span><b>Inicio</b> &mdash; pickup at the restaurant</div>
+      <div class="row"><span class="dot" style="background:${DROPOFF_FILL}"></span><b>Final</b> &mdash; dropoff at the customer</div>
+      <div class="row" style="color:var(--text-dim)">&nbsp;&nbsp;same number = same order; ring colour = which courier</div>
       <div class="row"><span class="dot" style="background:#ffcc4d"></span>Perceived world event</div>
+      <div class="row"><span class="dot" style="background:#ff4d3d;border-radius:2px"></span>Closed road &mdash; halo is the jam around it</div>
     `;
   }
 
@@ -1268,10 +1869,21 @@
       // Click the backdrop to dismiss, but never a click inside the card.
       if (e.target.id === "metricsOverlay") setMetricsOpen(false);
     });
+    const surgeBtn = document.getElementById("surgeBtn");
+    function setSurgeOn(on) {
+      app.surgeOn = on;
+      surgeBtn.classList.toggle("active", on);
+      renderMap();
+    }
+    surgeBtn.classList.toggle("active", app.surgeOn);
+    surgeBtn.addEventListener("click", () => setSurgeOn(!app.surgeOn));
+
     document.addEventListener("keydown", e => {
       if (e.key === "Escape") setMetricsOpen(false);
       else if ((e.key === "m" || e.key === "M") && e.target === document.body) {
         setMetricsOpen(!document.getElementById("metricsOverlay").classList.contains("open"));
+      } else if ((e.key === "s" || e.key === "S") && e.target === document.body) {
+        setSurgeOn(!app.surgeOn);
       }
     });
 
@@ -1282,7 +1894,12 @@
     } else {
       daySelect.innerHTML =
         `<option value="">Reference recording</option>` +
-        days.map(d => `<option value="${d.date}">${d.label} — ${d.date} (${d.weekday.slice(0, 3)})</option>`).join("");
+        days.map(d => {
+          const name = d.date === "showcase"
+            ? "Demo pair — ordinary vs chaotic"
+            : `${d.label} — ${d.date} (${d.weekday.slice(0, 3)})`;
+          return `<option value="${d.date}">${name}</option>`;
+        }).join("");
       daySelect.addEventListener("change", async e => {
         const iso = e.target.value || null;
         if (iso) {
@@ -1326,7 +1943,7 @@
         recomputeRange();
         renderAll();
         document.getElementById("loadStatus").textContent = iso
-          ? `${dayEntry(iso).label} — ${iso}, ${app.scenario === "hostile" ? "5 road closures" : "as it was"}`
+          ? scenarioStatusText(iso)
           : `Reference recording — seed ${replays.smart.seed}`;
       });
     }
@@ -1354,6 +1971,9 @@
         setPlaying(false);
         recomputeRange();
         renderAll();
+        if (app.day) {
+          document.getElementById("loadStatus").textContent = scenarioStatusText(app.day);
+        }
       });
     }
   }
@@ -1639,6 +2259,16 @@
 
     wireControls();
     renderAll();
+
+    // Open on the showcase pair when it is there. It is the only scenario
+    // carrying a surge grid and real closure geometry, so landing on the
+    // reference recording would open the page on the one view where half of
+    // what this dashboard can now draw is simply absent.
+    const daySelect = document.getElementById("daySelect");
+    if (daySelect && [...daySelect.options].some(o => o.value === "showcase")) {
+      daySelect.value = "showcase";
+      daySelect.dispatchEvent(new Event("change"));
+    }
   }
 
   async function main() {

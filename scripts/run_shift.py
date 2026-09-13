@@ -270,6 +270,13 @@ class BuiltScenario:
 
     scenario: Scenario
     platform: PlatformAdapter
+    # The surge map this scenario was built with, kept rather than dropped.
+    # `Scenario` only carries `supply_timeline` (couriers per cell), and the
+    # multiplier itself was recomputed nowhere and therefore unrecordable --
+    # which is why the replay had no surge layer to draw. Optional so the
+    # callers that assemble a `BuiltScenario` by hand (a scenario copied with
+    # closures spliced in, say) keep working unchanged.
+    surge_field: surge_mod.SurgeField | None = None
 
 
 def build_scenario(
@@ -333,7 +340,7 @@ def build_scenario(
         supply_timeline=scenario.supply_timeline,
         scenario_seed=seed,
     )
-    return BuiltScenario(scenario=scenario, platform=platform)
+    return BuiltScenario(scenario=scenario, platform=platform, surge_field=surge_field)
 
 
 # ---------------------------------------------------------------------------

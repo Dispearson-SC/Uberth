@@ -44,7 +44,7 @@ from src.core.ports import (
     TickRecord,
 )
 
-REPLAY_SCHEMA_VERSION = 2
+REPLAY_SCHEMA_VERSION = 3
 
 # One street polyline, a list of (lat, lon) points, as stored in
 # ShiftResult.routes and referenced by id from each tick.
@@ -91,6 +91,60 @@ class WorldEventRecord:
     lon: float | None
     affects_cells: tuple[str, ...]
     ground_truth_minute: int
+    # When the event stops. A closure that never lifts and a closure that
+    # lifts after an hour look identical on a map that only stores a start
+    # minute, and the difference is the whole point of the hostile day.
+    ends_minute: int | None = None
+    # The actual shape on the ground. A street closure closes a LIST OF ROAD
+    # EDGES, and drawing it as one warning pin at the first of them was
+    # under-reporting it by most of its length: five closures rendered as
+    # five dots on a city of two million. Each entry is one polyline of
+    # (lat, lon) points. Empty for events that genuinely are a point.
+    segments: tuple[Polyline, ...] = ()
+    # How far the disruption is felt around the closed road, in km. A closed
+    # street is not only impassable along its own length -- the traffic it
+    # displaces congeals around it, and that halo is what a courier actually
+    # rides into. Kept SHORT on purpose: this is the block around the
+    # closure, not a district-wide claim.
+    jam_radius_km: float | None = None
+
+
+@dataclass(frozen=True)
+class SurgeGridRecord:
+    """The surge map as the app displays it, over the whole shift.
+
+    This is GROUND TRUTH about the world, and it is recorded because it is
+    also what a real courier sees: a surge heat map is a screen in the app,
+    not private platform state. That is the only reason it is allowed here
+    under the same rule that keeps `perceived_minute` honest.
+
+    What it is NOT: the thing the agent repositions on. The agent moves on
+    its own BELIEVED DEMAND per cell (`BeliefState.demand_by_cell`) and only
+    ever sees a per-offer `surge_flag` boolean. Any UI drawing this layer
+    has to say so, or it invites the viewer to read a causal link that the
+    decision trace does not support.
+
+    Stored column-wise and subsampled: `values[i]` is the series for
+    `cells[i]` at each minute in `minutes`, which is the whole shift only if
+    `minutes` was not thinned by the caller.
+    """
+
+    minutes: tuple[int, ...]
+    cells: tuple[str, ...]
+    # Per cell, the closed ring of (lat, lon) points that draws it.
+    boundaries: tuple[Polyline, ...]
+    # Per cell, one multiplier per minute in `minutes`.
+    values: tuple[tuple[float, ...], ...]
+
+    def __post_init__(self) -> None:
+        if not (len(self.cells) == len(self.boundaries) == len(self.values)):
+            raise ValueError("SurgeGridRecord: cells, boundaries and values must be the same length")
+        bad = [c for c, series in zip(self.cells, self.values) if len(series) != len(self.minutes)]
+        if bad:
+            raise ValueError(
+                f"SurgeGridRecord: {len(bad)} cell series do not match the {len(self.minutes)} "
+                f"recorded minutes (first: {bad[0]!r})"
+            )
 
 
 def resolve_perceived_minute(event_id: str, ticks: Sequence[TickRecord]) -> int | None:
@@ -205,6 +259,7 @@ def build_replay(
     *,
     world_events: Sequence[WorldEventRecord] | None = None,
     courier_ids: Sequence[str] | None = None,
+    surge: SurgeGridRecord | None = None,
 ) -> dict:
     """Assemble the replay document from one or several `ShiftResult`s
     (several, for a multi-courier demo run on the same window and seed).
@@ -281,10 +336,23 @@ def build_replay(
                 "lon": _round(e.lon, 6) if e.lon is not None else None,
                 "affects_cells": list(e.affects_cells),
                 "ground_truth_minute": e.ground_truth_minute,
+                "ends_minute": e.ends_minute,
+                "segments": [
+                    [[_round(lat, 6), _round(lon, 6)] for lat, lon in seg] for seg in e.segments
+                ],
+                "jam_radius_km": _round(e.jam_radius_km, 3) if e.jam_radius_km is not None else None,
                 "perceived_minute": resolve_perceived_minute(e.event_id, all_ticks_flat),
             }
             for e in events_sorted
         ],
+        "surge_grid": None if surge is None else {
+            "minutes": list(surge.minutes),
+            "cells": list(surge.cells),
+            "boundaries": [
+                [[_round(lat, 5), _round(lon, 5)] for lat, lon in ring] for ring in surge.boundaries
+            ],
+            "values": [[_round(v, 2) for v in series] for series in surge.values],
+        },
     }
 
 
@@ -298,6 +366,7 @@ def write_replay(path: str | Path, document: dict) -> int:
 
 __all__ = [
     "REPLAY_SCHEMA_VERSION",
+    "SurgeGridRecord",
     "Polyline",
     "ShiftRecorder",
     "WorldEventRecord",
