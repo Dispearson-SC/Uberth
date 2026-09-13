@@ -73,14 +73,14 @@
   #app { display: flex; flex-direction: column; height: 100vh; }
 
   header {
-    display: flex; align-items: baseline; gap: 10px;
+    display: flex; align-items: center; gap: 10px;
     padding: 0 14px; height: 34px; border-bottom: 1px solid var(--border-soft);
     background: var(--panel); flex: 0 0 34px;
   }
-  header h1 { font-size: 13.5px; margin: 0; font-weight: 700; }
-  header .subtitle { color: var(--text-mid); font-size: 11.5px; }
+  header h1 { font-size: 13.5px; margin: 0; font-weight: 700; line-height: 1; }
+  header .subtitle { color: var(--text-mid); font-size: 11.5px; line-height: 1; }
   header .spacer { flex: 1; }
-  #loadStatus { font-size: 11.5px; color: var(--text); }
+  #loadStatus { font-size: 11.5px; color: var(--text); line-height: 1; }
 
   #main {
     flex: 1 1 auto; display: flex; min-height: 0;
@@ -140,32 +140,6 @@
   }
   #surgeBtn.active { background: rgba(255,107,44,0.18); border-color: #ff6b2c; color: #ff9a5c; }
 
-  /* Time on shift: the counter grid's Idle figure, turned the other way up. */
-  .onshift { margin-top: 8px; }
-  .onshift-head {
-    display: flex; justify-content: space-between; align-items: baseline;
-    font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
-    color: var(--text-dim); margin-bottom: 4px;
-  }
-  .onshift-head b { color: var(--text); font-size: 11px; letter-spacing: 0; }
-  .onshift-bar {
-    display: flex; height: 9px; border-radius: 5px; overflow: hidden;
-    background: var(--panel-2); border: 1px solid var(--border);
-  }
-  .onshift-bar .work { background: #3ddc84; }
-  .onshift-bar .idle { background: #c3c7ce; }
-  .onshift-legend {
-    display: flex; justify-content: space-between; gap: 8px;
-    margin-top: 4px; font-size: 10.5px; color: var(--text-dim);
-  }
-  .onshift-legend b { color: var(--text); }
-  .onshift-legend i {
-    display: inline-block; width: 8px; height: 8px; border-radius: 2px;
-    margin-right: 4px; vertical-align: -1px;
-  }
-  .onshift-legend i.work { background: #3ddc84; }
-  .onshift-legend i.idle { background: #c3c7ce; }
-
   #netBadge {
     position: absolute; right: 10px; top: 10px; z-index: 500;
     background: rgba(255,204,77,0.15); border: 1px solid var(--warn);
@@ -201,9 +175,12 @@
   #counters::-webkit-scrollbar-thumb { background: #d5d8dd; border-radius: 3px; }
   .lane-counters { margin-bottom: 10px; }
   .lane-counters:last-child { margin-bottom: 0; }
+  /* No `text-transform` here on purpose: these are NAMES now, and the
+     uppercase rule was flattening "Ubert (Agent)" and "Fire_Fingers" into
+     shouted versions of themselves. */
   .lane-title {
-    display: flex; align-items: flex-start; gap: 6px; font-weight: 700; font-size: 11.5px;
-    text-transform: uppercase; line-height: 1.4; margin-bottom: 10px;
+    display: flex; align-items: flex-start; gap: 6px; font-weight: 700; font-size: 12.5px;
+    line-height: 1.4; margin-bottom: 10px;
   }
   .lane-title .swatch { width: 8px; height: 8px; border-radius: 50%; margin-top: 3px; flex: 0 0 auto; }
   .lane-counters { margin-bottom: 12px; }
@@ -248,7 +225,7 @@
   .trip-card:last-child { margin-bottom: 0; }
   .trip-card .card-title {
     display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12px;
-    text-transform: uppercase; margin-bottom: 6px;
+    margin-bottom: 6px;
   }
   .trip-card .card-title .swatch { width: 9px; height: 9px; border-radius: 50%; }
   .trip-list { display: flex; flex-direction: column; gap: 6px; }
@@ -283,7 +260,7 @@
   }
   .decision-card .card-title {
     display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12px;
-    text-transform: uppercase; margin-bottom: 4px;
+    margin-bottom: 4px;
   }
   .decision-card .card-title .swatch { width: 9px; height: 9px; border-radius: 50%; }
   .decision-head {
@@ -351,7 +328,7 @@
   .offer-actions { display: flex; gap: 8px; }
   .offer-actions .btn {
     flex: 1; border-radius: 5px; padding: 8px 0; font-size: 12px; font-weight: 700;
-    border: 1px solid; cursor: default;
+    border: 1px solid; cursor: default; text-align: center;
   }
   .offer-actions .reject { background: #fdece5; border-color: var(--bad); color: var(--bad); }
   .offer-actions .accept { background: #c9e599; border-color: #272e1b; color: #272e1b; font-weight: 600; }
@@ -1540,10 +1517,14 @@
     smart: "#4da3ff", fork: "#b06bff", fixed: "#ffb454",
     duel_smart: "#4da3ff", duel_floor: "#ffb454",
   };
+  // The two couriers are named, not described. The scenario they are working
+  // is already stated once in the header and once in the day selector, and
+  // repeating it on every lane label pushed the name itself off the line.
+  const COURIER_AGENT = "Ubert (Agent)";
+  const COURIER_FLOOR = "Fire_Fingers (40 MXN Floor)";
   const LANE_LABELS = {
-    smart: "SMART", fork: "SMART (fork: closure)", fixed: "FIXED THRESHOLD (40 MXN floor)",
-    duel_smart: "SMART (41.9 C, rain, 5 closures)",
-    duel_floor: "FIXED THRESHOLD (same hostile day)",
+    smart: COURIER_AGENT, fork: COURIER_AGENT + " — fork: closure", fixed: COURIER_FLOOR,
+    duel_smart: COURIER_AGENT, duel_floor: COURIER_FLOOR,
   };
 
   const app = {
@@ -1564,6 +1545,7 @@
     // not an unexplained pill.
     surgePanelOpen: true,
     tripsOpen: true,
+    factorsOpen: {},   // lane key -> whether its score breakdown is unfolded
     _surgeSource: null, // the grid currently built into the map view
     _surgeIdx: -1,      // last styled sample, so playback does not restyle 127 polygons per frame
   };
@@ -1594,21 +1576,13 @@
     // day_<iso>_<variant>_<tag>
     const parts = String(key).split("_");
     const tag = parts[parts.length - 1];
-    const entry = dayEntry(app.day);
-    const who = tag === "smart" ? "SMART" : "FIXED THRESHOLD (40 MXN floor)";
-    // A scenario that names itself per variant (the showcase pair) says so;
-    // an ordinary day is one date whose two variants differ only by closures.
-    if (entry && entry.variantLabel && entry.variantLabel[app.scenario]) {
-      return `${who} — ${entry.variantLabel[app.scenario]}`;
-    }
-    const when = entry ? `${entry.label}` : app.day;
-    const closures = entry && entry.variants && entry.variants.hostile
-      ? entry.variants.hostile.closures : 5;
-    return `${who} — ${when}${app.scenario === "hostile" ? `, ${closures} closures` : ""}`;
+    return tag === "smart" ? COURIER_AGENT : COURIER_FLOOR;
   }
-  // What the header says about the scenario on screen. A scenario that names
-  // its own variants (the showcase pair) uses those names; an ordinary day is
-  // one date shown either as it was or with its roads closed.
+
+  // What the header says about the scenario on screen. This is now the ONLY
+  // place the scenario is named: the lane labels carry the couriers' names
+  // and nothing else, so if this line goes quiet nobody can tell which day
+  // they are looking at.
   function scenarioStatusText(iso) {
     const entry = dayEntry(iso);
     if (!entry) return iso;
@@ -1618,6 +1592,16 @@
     const closures = ((entry.variants || {}).hostile || {}).closures || 5;
     return `${entry.label} — ${iso}, ` +
       (app.scenario === "hostile" ? `${closures} road closures` : "as it was");
+  }
+
+  // The short name, for places a full label will not fit: the map pin, the
+  // legend row, the surge read-out. Derived once here rather than by
+  // chopping the label at its first space, which is what the map was doing
+  // and which turned "Fire_Fingers (40 MXN Floor)" into whatever it liked.
+  function laneShortName(key) {
+    const label = laneLabel(key);
+    const paren = label.indexOf(" (");
+    return (paren > 0 ? label.slice(0, paren) : label).split(" — ")[0];
   }
 
   function laneColor(key) {
@@ -1637,41 +1621,20 @@
     app.currentMinute = clamp(app.currentMinute, app.minMinute, app.maxMinute);
   }
 
-  function fmtDuration(minutes) {
-    const m = Math.max(0, Math.round(minutes));
-    const h = Math.floor(m / 60);
-    return h ? `${h}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`;
-  }
+  // `onShiftHTML` and its `fmtDuration` helper lived here: a bar splitting
+  // elapsed time into working and idle. Removed on request. The idle figure
+  // is still recorded in every replay and still read by the metrics modal's
+  // "where the shift's minutes went" breakdown, which is the fuller version
+  // of the same thing.
 
-  // The reverse of the idle counter, in its own block: of the shift elapsed so
-  // far, how much of it the courier was actually WORKING.
-  //
-  // Both numbers are shown because they answer different questions and a
-  // reader will want whichever matches the one they are asking. "18 minutes
-  // idle" says how much was wasted; "4h 02m on the job, 93% of the shift"
-  // says how hard it was worked -- and the percentage is the honest way to
-  // compare two couriers who did not stop at the same minute, which a raw
-  // minute count is not.
-  function onShiftHTML(s) {
-    const elapsed = Math.max(s.minutes_elapsed || 0, 0);
-    if (elapsed <= 0) return "";
-    const idle = clamp(s.minutes_idle || 0, 0, elapsed);
-    const working = elapsed - idle;
-    const workPct = (working / elapsed) * 100;
-    return `
-      <div class="onshift">
-        <div class="onshift-head">
-          <span>Time on shift</span><b>${fmtDuration(elapsed)}</b>
-        </div>
-        <div class="onshift-bar">
-          <span class="work" style="width:${workPct.toFixed(1)}%"></span>
-          <span class="idle" style="width:${(100 - workPct).toFixed(1)}%"></span>
-        </div>
-        <div class="onshift-legend">
-          <span><i class="work"></i>Working <b>${fmtDuration(working)}</b> (${workPct.toFixed(0)}%)</span>
-          <span><i class="idle"></i>Idle <b>${fmtDuration(idle)}</b> (${(100 - workPct).toFixed(0)}%)</span>
-        </div>
-      </div>`;
+  // Takings per kilometre actually driven -- paid and unpaid kilometres
+  // alike, because the courier burns fuel and tyre on both. This is the
+  // metric that stayed stable across every recalibration this simulator went
+  // through, which is why it is the one on the card: a rate per hour moves
+  // when the shift length moves, and this does not.
+  function mxnPerKm(s) {
+    const km = s.km_traveled || 0;
+    return km > 0 ? s.earnings_mxn / km : 0;
   }
 
   function renderCounters() {
@@ -1692,20 +1655,14 @@
             <div class="counter"><div class="value">${s.earnings_mxn.toFixed(0)} <span class="unit">MXN</span></div><div class="label">Earned</div></div>
             <div class="counter"><div class="value km">${s.km_traveled.toFixed(1)} <span class="unit">km</span></div><div class="label">Driven</div></div>
             <div class="counter"><div class="value">${s.deliveries_completed}</div><div class="label">Deliveries</div></div>
-            <div class="counter"><div class="value">${Math.round(s.minutes_idle)} <span class="unit">min</span></div><div class="label">Idle</div></div>
+            <div class="counter"><div class="value">${mxnPerKm(s).toFixed(2)} <span class="unit">MXN/km</span></div><div class="label">Per kilometre driven</div></div>
           </div>
-          ${onShiftHTML(s)}
         </div>`;
     }
-    const a = vals.A, b = vals.B;
-    let headline = "";
-    if (b.km_traveled > 0 && b.earnings_mxn > 0) {
-      const earnRatio = (a.earnings_mxn / b.earnings_mxn) * 100;
-      const kmSaved = (1 - a.km_traveled / b.km_traveled) * 100;
-      headline = `So far, <b>${laneLabel(laneAKey())}</b> has earned <b>${earnRatio.toFixed(0)}%</b> of ` +
-        `<b>fixed_threshold</b>'s money on <b>${kmSaved.toFixed(0)}%</b> less driving.`;
-    }
-    html += `<div id="headline">${headline}</div>`;
+    // The "has earned N% of the floor's money on M% less driving" sentence
+    // used to sit here. Removed on request: it restated, every minute and in
+    // the smallest type on the page, a comparison the two counter blocks
+    // directly above it already make.
     el.innerHTML = html;
   }
 
@@ -1772,7 +1729,7 @@
       return `
         <div class="offer-card">
           <div class="offer-head">
-            <div class="offer-title">Entrega</div>
+            <div class="offer-title">Delivery</div>
             <div class="offer-pay">$${Number(mxn).toFixed(2)} <span class="unit">MXN</span></div>
           </div>
           <div class="offer-route">
@@ -1783,8 +1740,8 @@
             </div>
           </div>
           <div class="offer-actions">
-            <span class="btn reject">Rechazar</span>
-            <span class="btn accept">Aceptar</span>
+            <span class="btn reject">Reject</span>
+            <span class="btn accept">Accept</span>
           </div>
         </div>`;
     }
@@ -1825,15 +1782,24 @@
     const state = renderStateAt(lane.doc, app.currentMinute).discrete;
     const d = state.lastDecision;
     if (!d || !d.trace.considered.length) return "";
-    return `<div class="offer-factors">` +
-      d.trace.considered.map(ev => offerBlockHTML(ev, d.trace.chosen_order_id)).join("") +
-      `</div>`;
+    // Shut by default. It is the agent's full arithmetic -- every score
+    // factor on every offer it looked at -- and unfolded it buries the card
+    // the panel exists to show. Open is a choice, not the resting state.
+    const open = app.factorsOpen[lane.key] === true;
+    return `
+      <button class="section-toggle factors-toggle" data-lane="${lane.key}">
+        <span class="name">HOW IT SCORED THIS</span>
+        <span class="arrow">${open ? "&#9662;" : "&#9656;"}</span>
+      </button>
+      <div class="offer-factors"${open ? "" : ' style="display:none"'}>
+        ${d.trace.considered.map(ev => offerBlockHTML(ev, d.trace.chosen_order_id)).join("")}
+      </div>`;
   }
 
   function renderWhyPanel() {
     const lanes = [
-      { doc: laneADoc(), color: laneColor(laneAKey()), label: laneLabel(laneAKey()), initial: "S" },
-      { doc: laneBDoc(), color: laneColor(laneBKey()), label: laneLabel(laneBKey()), initial: "F" },
+      { key: "A", doc: laneADoc(), color: laneColor(laneAKey()), label: laneLabel(laneAKey()), initial: "U" },
+      { key: "B", doc: laneBDoc(), color: laneColor(laneBKey()), label: laneLabel(laneBKey()), initial: "F" },
     ];
     document.getElementById("decisionCards").innerHTML = lanes.map(decisionCardHTML).join("");
   }
@@ -1958,8 +1924,8 @@
 
     mv.setTrail("A", aTrail, laneColor(laneAKey()));
     mv.setTrail("B", bTrail, laneColor(laneBKey()));
-    mv.setCourier("A", aState.lat, aState.lon, laneColor(laneAKey()), laneLabel(laneAKey()).split(" ")[0]);
-    mv.setCourier("B", bState.lat, bState.lon, laneColor(laneBKey()), "FIXED");
+    mv.setCourier("A", aState.lat, aState.lon, laneColor(laneAKey()), laneShortName(laneAKey()));
+    mv.setCourier("B", bState.lat, bState.lon, laneColor(laneBKey()), laneShortName(laneBKey()));
 
     // Pickup / dropoff markers within a trailing visibility window, so the
     // map does not fill up with every stop from eight hours ago.
@@ -1972,7 +1938,7 @@
     const WINDOW_MIN = 45;
     for (const [doc, key] of [[a, laneAKey()], [b, laneBKey()]]) {
       const ring = laneColor(key);
-      const who = laneLabel(key).split(" ")[0];
+      const who = laneShortName(key);
       for (const m of doc._markers) {
         if (m.minute <= app.currentMinute && m.minute >= app.currentMinute - WINDOW_MIN) {
           const title = `${stopSideLabel(m.kind, m.n)} · ${who} · ${m.order_id || "?"}`;
@@ -2085,13 +2051,14 @@
     const hot = surge.hottest(idx, 3);
     const aHere = surgeUnder(surge, aState.lat, aState.lon, idx);
     const bHere = surgeUnder(surge, bState.lat, bState.lon, idx);
-    const aName = laneLabel(laneAKey()).split(" ")[0];
+    const aName = laneShortName(laneAKey());
+    const bName = laneShortName(laneBKey());
 
     const zones = hot.length
       ? hot.map(z => {
           const who = [];
           if (aHere && aHere.cell === z.cell) who.push(aName);
-          if (bHere && bHere.cell === z.cell) who.push("FIXED");
+          if (bHere && bHere.cell === z.cell) who.push(bName);
           return `<div class="sp-zone">
             <span class="sp-swatch" style="background:${surgeSwatch(z.value)}"></span>
             <span class="sp-mult">${z.value.toFixed(2)}x</span>
@@ -2113,7 +2080,7 @@
       ${zones}
       <div class="sp-here">
         <div><b>${aName}</b> &middot; ${standing(aHere && aHere.value)}</div>
-        <div><b>FIXED</b> &middot; ${standing(bHere && bHere.value)}</div>
+        <div><b>${bName}</b> &middot; ${standing(bHere && bHere.value)}</div>
         ${movingLine}
       </div>
       <div class="sp-note">
@@ -2127,10 +2094,10 @@
 
   function renderLegend() {
     const laneAColor = laneColor(laneAKey());
-    const laneALabel = laneLabel(laneAKey()).split(" ")[0];
+    const laneALabel = laneShortName(laneAKey());
     document.getElementById("legend").innerHTML = `
       <div class="row"><span class="dot" style="background:${laneAColor}"></span>${laneALabel} courier</div>
-      <div class="row"><span class="dot" style="background:${laneColor(laneBKey())}"></span>FIXED courier</div>
+      <div class="row"><span class="dot" style="background:${laneColor(laneBKey())}"></span>${laneShortName(laneBKey())} courier</div>
       <div class="row"><span class="dot" style="background:${PICKUP_FILL};clip-path:polygon(50% 0,0 100%,100% 100%)"></span><b>Inicio</b> &mdash; pickup at the restaurant</div>
       <div class="row"><span class="dot" style="background:${DROPOFF_FILL}"></span><b>Final</b> &mdash; dropoff at the customer</div>
       <div class="row" style="color:var(--text-dim)">&nbsp;&nbsp;same number = same order; ring colour = which courier</div>
@@ -2216,6 +2183,16 @@
       renderMap();
     });
 
+    // Delegated: the breakdown toggles are rebuilt on every scrub tick, so a
+    // listener bound to the button itself would be thrown away a moment later.
+    document.getElementById("decisionCards").addEventListener("click", e => {
+      const btn = e.target.closest(".factors-toggle");
+      if (!btn) return;
+      const key = btn.getAttribute("data-lane");
+      app.factorsOpen[key] = !app.factorsOpen[key];
+      renderWhyPanel();
+    });
+
     const tripsToggle = document.getElementById("tripsToggle");
     tripsToggle.addEventListener("click", () => {
       app.tripsOpen = !app.tripsOpen;
@@ -2233,12 +2210,16 @@
     });
 
     const daySelect = document.getElementById("daySelect");
-    const days = (dayManifest && dayManifest.days) || [];
+    // Only the tuned recordings are offered. The shipped-agent pairs and the
+    // older per-day runs are still on disk and still load if selected by
+    // name -- they are simply not in the menu, because the agent they show
+    // is not the one this demo is about.
+    const allDays = (dayManifest && dayManifest.days) || [];
+    const days = allDays.filter(d => String(d.date).includes("tuned"));
     if (!days.length) {
       daySelect.style.display = "none";
     } else {
       daySelect.innerHTML =
-        `<option value="">Reference recording</option>` +
         days.map(d => {
           const name = d.showcaseName
             || `${d.label} — ${d.date} (${d.weekday.slice(0, 3)})`;
@@ -2609,7 +2590,7 @@
     // reference recording would open the page on the one view where half of
     // what this dashboard can now draw is simply absent.
     const daySelect = document.getElementById("daySelect");
-    const opening = ["showcase-tuned", "showcase-b-tuned", "showcase"].find(
+    const opening = ["showcase-tuned", "showcase-b-tuned", "showcase-c-tuned"].find(
       v => daySelect && [...daySelect.options].some(o => o.value === v)
     );
     if (opening) {
