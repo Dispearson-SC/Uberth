@@ -55,10 +55,21 @@ from __future__ import annotations
 # "take the nearest of what is on screen" picks the only card on screen, so a
 # nearest-first baseline is arithmetically identical to accepting everything.
 # It is a menu heuristic, and this app is a flow.
+# CHANGED TO 40 BY THE USER. The reasoning above is kept rather than
+# rewritten, because it is what makes this change legible: 55 was not a
+# guess, it was the sweep's reference-strongest floor, chosen deliberately to
+# make the opponent as hard as available. 40 is a different criterion --
+# closer to the rule of thumb a working courier actually uses -- and it
+# almost certainly makes the baseline weaker, which flatters the agent.
+#
+# So the comparison is no longer "against the hardest opponent we could
+# build". Anyone quoting a margin against this baseline has to say which
+# floor it was measured at. Both are recorded in the commit that made the
+# change.
 BASELINE_CALIBRATION: dict[str, float] = {
     # The floor, in gross MXN off the card. The courier does no arithmetic
     # on it: no per-hour rate, no kilometres, no clock. That is the point.
-    "fixed_payout_floor_mxn": 55.0,
+    "fixed_payout_floor_mxn": 40.0,
     # Late in the shift even a disciplined courier stops arguing: an order
     # that gets them home paid beats riding home empty. Below this many
     # minutes of shift left the floor is scaled by the factor underneath.

@@ -523,6 +523,38 @@ def build_traffic_timeline(
 # ----------------------------------------------------------------------------
 
 
+# How much of a CAR's congestion a motorcycle actually absorbs.
+#
+# Every multiplier in this module is derived from TomTom probe data, and
+# TomTom probes are cars. A delivery motorcycle filters between stopped
+# lanes, takes gaps a car cannot, and parks in thirty seconds. It does not
+# sit in the jam the probe measured. `DECISIONS.md` D11 already states this
+# as the reason the AGENT does not buy a traffic feed -- but the WORLD was
+# applying car congestion to a two-wheeler anyway, which is the same mistake
+# with the roles swapped.
+#
+# Calibrated against a working courier's own reported average: 30 km/h over
+# a shift, traffic and lights included. Measured free-flow on the pairs a
+# courier actually rides (under 4 km) is 41.9 km/h, so the effective
+# multiplier they experience is about 1.40. The car multiplier on those same
+# cells averages 2.50 -- the operating cells are dense commercial ones and
+# carry the heaviest overrides, well above the 1.75 city mean.
+#
+#   1 + (2.50 - 1) x f = 1.40  ->  f ~ 0.27 on paper.
+#
+# Measured end to end, 0.27 produced 25.4 km/h of PURE riding once the 3.5
+# fixed minutes at each door are taken out of the riding bucket, so the
+# constant was re-fitted against the shift itself rather than the paper
+# arithmetic: 0.15 lands the measured figure on the reported 30 km/h.
+#
+# This is ONE constant fitted to ONE stated observation, in the same spirit
+# as D6b: a simulator that contradicts what a courier knows from experience
+# discredits every other number it prints. It is not a free knob -- moving it
+# moves the shift's delivery rate directly, and the target is the courier's
+# figure, not a number that makes a result look better.
+MOTORCYCLE_FILTERING_FACTOR = 0.15
+
+
 def travel_time_minutes(base_minutes: float, tick: TrafficTick, cell: str) -> float:
     """The single place congestion is applied to a free-flow travel time.
 
@@ -533,5 +565,10 @@ def travel_time_minutes(base_minutes: float, tick: TrafficTick, cell: str) -> fl
     >= 1.0). Only ever touches minutes — never distances; km and minutes
     stay strictly separate, as everywhere else in this simulator.
     """
-    multiplier = _clamp_min(tick.multiplier_for(cell))
+    car_multiplier = _clamp_min(tick.multiplier_for(cell))
+    # A motorcycle absorbs only part of what the car probe measured. The
+    # free-flow term is untouched: filtering buys nothing on an empty road,
+    # which is why the factor multiplies the EXCESS over 1.0 rather than the
+    # multiplier itself.
+    multiplier = _clamp_min(1.0 + (car_multiplier - 1.0) * MOTORCYCLE_FILTERING_FACTOR)
     return base_minutes * multiplier

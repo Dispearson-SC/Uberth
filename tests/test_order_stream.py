@@ -33,7 +33,15 @@ from tests.conftest import DATE, DAY_OF_WEEK, SHIFT_END_MIN, SHIFT_START_MIN, SE
 # `[o.model_dump(mode="json") for o in orders]` — sort_keys makes the hash
 # independent of pydantic's field-declaration order, which is otherwise an
 # implementation detail this suite has no business depending on.
-CALIBRATED_DIGEST = "6d18a2332166c4210171c03dc2022cceb1b53c8914db9cfae2322e6b922a9d02"
+# Re-pinned when FARE_CALIBRATION was refitted from "make the SHIFT TOTAL
+# plausible" to "make the PER-TRIP payout match what a working courier
+# reports" (25-40 normally, 50-80 for a long one, ~85/15). The previous
+# sentinel was 6d18a2332166c4210171c03dc2022cceb1b53c8914db9cfae2322e6b922a9d02
+# at base 18.0 / per_km 6.5 / per_min 1.2, which produced a 46 MXN mean offer
+# and a 41 MXN median. The move is intentional and the reason is recorded in
+# `world/demand.py::FARE_CALIBRATION`; the sentinel exists so a change like
+# this cannot happen quietly, not to forbid it.
+CALIBRATED_DIGEST = "4e27d9d1d73f336f92cf3396e42a7806f43984bd08e13468386daa129649469f"
 
 
 def _digest(orders) -> str:
@@ -61,7 +69,9 @@ def test_trip_km_distribution(reference_orders):
 
 def test_gross_fare_median(reference_orders):
     fares = np.array([o.gross_payout_mxn for o in reference_orders])
-    assert np.median(fares) == pytest.approx(40.98, rel=0.01)
+    # 35.19 at the refitted fare, down from 40.98. The target it is fitted
+    # to is the courier's own report of 25-40 MXN for a normal trip.
+    assert np.median(fares) == pytest.approx(35.19, rel=0.01)
 
 
 def test_order_stream_is_deterministic_across_calls():

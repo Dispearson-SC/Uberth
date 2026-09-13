@@ -215,7 +215,26 @@ REACH_CALIBRATION: dict[str, float] = {
     # offers per courier-hour against the 7.5 anchor. Sensitivity is real
     # and worth knowing: 0.70 and 0.80 both land near the anchor, 0.60 falls
     # to 5.9 and 0.90 climbs to 8.9.
-    "baseline_reach_km": 0.70,
+    # Raised from 0.70 to 1.20 once the reach check started measuring from
+    # where a busy courier will FINISH rather than where they stand. Swept
+    # against the delivery rate a working courier reports (3-4 an hour):
+    #
+    #   reach 0.7   0.96 deliveries/h   38.8 idle minutes per delivery
+    #   reach 1.2   2.79               0.1
+    #   reach 1.8   2.88               0.1
+    #   reach 3.5   2.93               0.1
+    #
+    # 1.2 is the knee: starvation disappears completely and nothing past it
+    # buys anything. Chosen as the SMALLEST radius that is not starving,
+    # deliberately, rather than the largest that scores well -- a real app
+    # does not offer a courier a pickup 3.5 km away, and a radius tuned past
+    # the point where it changes the outcome is a number with no meaning.
+    #
+    # At 0.70 the courier spent 310 of 500 shift minutes parked with an
+    # empty screen, and only 8 minutes of the whole shift had an offer
+    # visible at all. That was invisible while the cycle was long enough to
+    # hide it.
+    "baseline_reach_km": 1.20,
     "reference_supply": 5.0,
     "supply_floor": 1.0,
     "expansion_softening": 0.35,
@@ -449,7 +468,28 @@ class PlatformAdapter:
             # actually makes the surviving set skew cheap once combined
             # with the quantile filter below.
             reach_km = min(self._reach_km(local_supply), reach_ceiling_km)
-            distance_km = geo.great_circle_km(courier.lat, courier.lon, order.origin_lat, order.origin_lon)
+            # Measure from where the courier can actually TAKE the job. For a
+            # free courier that is where they stand; for one with work in
+            # hand it is where that work drops them, because by the time they
+            # are free that is where they will be.
+            #
+            # Measured before this existed: orders queued behind work in hand
+            # averaged a 5.61 km ride to the restaurant (p90 9.33, max 11.30)
+            # against 0.70 km for orders taken on the spot -- the radius was
+            # doing its job for free couriers and nothing at all for busy
+            # ones. That single term is most of a delivery cycle that ran
+            # 37-50 minutes against the 15-20 a working courier reports, and
+            # the fare coefficients had been inflated to make the resulting
+            # shift total look plausible anyway.
+            #
+            # Queueing itself is untouched and deliberate: a courier still
+            # accepts ahead, still keeps the kitchen cooking while they ride.
+            # They just no longer get offered a pickup on the far side of the
+            # city from where they will be standing.
+            from_lat, from_lon = courier.lat, courier.lon
+            if courier.finishes_lat is not None and courier.finishes_lon is not None:
+                from_lat, from_lon = courier.finishes_lat, courier.finishes_lon
+            distance_km = geo.great_circle_km(from_lat, from_lon, order.origin_lat, order.origin_lon)
             if distance_km <= reach_km:
                 reachable.append((distance_km, order))
 

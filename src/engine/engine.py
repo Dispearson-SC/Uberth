@@ -349,6 +349,12 @@ def run_shift(
             home_lat=home_lat,
             home_lon=home_lon,
             minutes_left_in_shift=max(0, scenario.shift_end_min - minute),
+            # Ground truth about where the work in hand ends. The platform
+            # uses it to measure reach from where the courier WILL be rather
+            # than where they are; see `CourierSnapshot.finishes_lat`.
+            finishes_lat=(courier.active_orders[-1].destination.lat if courier.active_orders else None),
+            finishes_lon=(courier.active_orders[-1].destination.lon if courier.active_orders else None),
+            free_at_min=(minute + int(state.phase_remaining) if courier.active_orders else None),
         )
 
     def _resolve_target_cell(cell: str) -> str | None:

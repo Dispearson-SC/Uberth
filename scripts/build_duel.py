@@ -58,6 +58,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import scripts.run_shift as rs  # noqa: E402
 from src.eval.replay import WorldEventRecord, build_replay, write_replay  # noqa: E402
+from src.agent.calibration import BASELINE_CALIBRATION  # noqa: E402
 from src.world import events as events_mod  # noqa: E402
 
 # The worst working day in the weather archive for this window. See the module
@@ -264,7 +265,9 @@ def main(argv: list[str] | None = None) -> int:
             rs.POLICY_FACTORIES["smart"](), hostile_built, oracle, window, graph, skeleton
         )
 
-        floor = _summarise("payout floor (55 MXN)", floor_outcome)
+        floor = _summarise(
+            f"payout floor ({BASELINE_CALIBRATION['fixed_payout_floor_mxn']:.0f} MXN)", floor_outcome
+        )
         smart = _summarise("smart agent", smart_outcome)
 
         print(f"\n=== {args.date} ({args.day_of_week}), {window.label_with_hours}, "

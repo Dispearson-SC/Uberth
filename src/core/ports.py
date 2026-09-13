@@ -291,6 +291,27 @@ class CourierSnapshot:
     home_lon: float
     minutes_left_in_shift: int
 
+    # Where the courier's LAST held job drops them, and when. Both None when
+    # they are free.
+    #
+    # This exists because a reach radius measured from a busy courier's
+    # current position is a lie, and it was measured as one. The platform
+    # offers an order when the courier is within `reach_km` of its
+    # restaurant RIGHT NOW -- but a courier mid-delivery cannot act on it
+    # right now. Split by whether the order was taken on the spot or queued
+    # behind work in hand:
+    #
+    #   from where I stand now       0.70 km mean   (exactly the radius)
+    #   accepted ahead, queued       5.61 km mean   p90 9.33, max 11.30
+    #
+    # Eight times the distance, and it is the dominant term in a delivery
+    # cycle that ran 37-50 minutes against the 15-20 a working courier
+    # reports. Queueing is real and stays; offering a job 11 km from where
+    # the courier will actually be is not.
+    finishes_lat: float | None = None
+    finishes_lon: float | None = None
+    free_at_min: int | None = None
+
     @property
     def acceptance_rate(self) -> float:
         return self.offers_accepted / self.offers_seen if self.offers_seen else 1.0

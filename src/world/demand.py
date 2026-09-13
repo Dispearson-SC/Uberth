@@ -222,11 +222,28 @@ DEMAND_CALIBRATION: dict[str, float] = {
 
 FARE_CALIBRATION: dict[str, float] = {
     # NOT platform-published figures. Uber Eats / DiDi Food coefficients are
-    # not public; these are tuned so a typical short trip pays ~35-70 MXN
-    # and a whole shift lands in the range real Monterrey couriers report.
-    "base_mxn": 18.0,
-    "per_km_mxn": 6.5,
-    "per_min_mxn": 1.2,
+    # not public, so these are fitted -- and what they are fitted TO changed.
+    #
+    # They used to be tuned so a whole SHIFT landed in the earnings range
+    # real couriers report. That is the wrong target, because a shift total
+    # can be hit by two errors that cancel, and it was: the old coefficients
+    # (base 18.0, per_km 6.5, per_min 1.2) produced a 46 MXN mean offer and
+    # an 88 MXN mean ACCEPTED trip, against 1.2-1.6 deliveries an hour. The
+    # total looked plausible. Every figure inside it was wrong.
+    #
+    # These are fitted instead to what a working courier reports PER TRIP:
+    # 25-40 MXN normally, 50-80 for a long one, roughly 85/15. That is
+    # internally consistent with 3-4 deliveries an hour (3.5 x 32.5 = 114
+    # MXN/h) and with the plausibility band this project already asserts.
+    #
+    # The per-km slope is the load-bearing one, and not only for the amount.
+    # At 6.5 MXN/km the longest trip was always the best-paid one, so BOTH
+    # policies chased distance: accepted legs averaged 5.3-5.9 km against a
+    # 2.1 km median offer, and the cycle stretched to 37-50 minutes. The
+    # slope does not just price a trip, it picks the strategy.
+    "base_mxn": 20.0,
+    "per_km_mxn": 3.9,
+    "per_min_mxn": 0.9,
     # Reference speed used only to derive the straight-line `ref_minutes`
     # figure from `ref_km` — an assumed average incl. traffic/stops, not a
     # real routed ETA (that belongs to `network.py` / the sim engine).
