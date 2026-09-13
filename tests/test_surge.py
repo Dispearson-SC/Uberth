@@ -26,7 +26,11 @@ def test_mean_surge_at_spawn(reference_orders):
 def test_share_of_orders_above_1_2_surge(reference_orders):
     surges = np.array([o.surge_at_spawn for o in reference_orders])
     share = (surges > 1.2).mean()
-    assert share == pytest.approx(0.166, rel=0.02)
+    # 0.170 after the destination model changed: surge is demand over
+    # supply per cell, so moving where customers are moves the demand
+    # field. Still inside the 6-18% realism band that is the actual gate;
+    # this pin only records where in the band we land.
+    assert share == pytest.approx(0.170, rel=0.02)
 
 
 def test_max_surge_hits_the_configured_ceiling(reference_orders):

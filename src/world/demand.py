@@ -214,41 +214,117 @@ DEMAND_CALIBRATION: dict[str, float] = {
     "orders_per_weight_unit_per_min": 0.0028,
     # Gravity-model decay distance (km): most food delivery in Monterrey is
     # 1-5 km, so destinations should decay fast beyond ~2-3 km.
-    "gravity_d0_km": 1.4,
+    # Solved backwards from the courier's reported PAYOUT distribution rather
+    # than assumed. The old value of 1.4 carried the comment "most food
+    # delivery in Monterrey is 1-5 km" -- an assumption, and one that put the
+    # median road trip at 2.99 km. See MAX_TRIP_KM for the full derivation.
+    "gravity_d0_km": 2.6,
     # Destination point is jittered within its cell (uniform over a disk of
     # this radius) so deliveries don't all land on cell centroids.
     "jitter_radius_km": 0.35,
 }
 
 FARE_CALIBRATION: dict[str, float] = {
-    # NOT platform-published figures. Uber Eats / DiDi Food coefficients are
-    # not public, so these are fitted -- and what they are fitted TO changed.
+    # The card a working courier described, taken literally rather than
+    # fitted to a distribution:
     #
-    # They used to be tuned so a whole SHIFT landed in the earnings range
-    # real couriers report. That is the wrong target, because a shift total
-    # can be hit by two errors that cancel, and it was: the old coefficients
-    # (base 18.0, per_km 6.5, per_min 1.2) produced a 46 MXN mean offer and
-    # an 88 MXN mean ACCEPTED trip, against 1.2-1.6 deliveries an hour. The
-    # total looked plausible. Every figure inside it was wrong.
+    #   under 5 km      a flat 30 MXN minimum -- distance buys nothing here
+    #   5 to 12 km      rises with distance, reaching about 80 at 12 km
+    #   over 12 km      does not happen; see MAX_TRIP_KM
     #
-    # These are fitted instead to what a working courier reports PER TRIP:
-    # 25-40 MXN normally, 50-80 for a long one, roughly 85/15. That is
-    # internally consistent with 3-4 deliveries an hour (3.5 x 32.5 = 114
-    # MXN/h) and with the plausibility band this project already asserts.
+    # The flat floor is the part a fitted curve kept getting wrong. Every
+    # earlier version -- linear, then three-bracket -- spread short trips
+    # across a range, because a smooth function of km has to. A real card
+    # does not: below the minimum-fare distance EVERY trip pays the same,
+    # which is why a courier says "normal trips are 30 to 40" rather than
+    # describing a slope. That flat region is a fact about the card, not a
+    # smoothing artefact, and it is now modelled as one.
     #
-    # The per-km slope is the load-bearing one, and not only for the amount.
-    # At 6.5 MXN/km the longest trip was always the best-paid one, so BOTH
-    # policies chased distance: accepted legs averaged 5.3-5.9 km against a
-    # 2.1 km median offer, and the cycle stretched to 37-50 minutes. The
-    # slope does not just price a trip, it picks the strategy.
-    "base_mxn": 20.0,
-    "per_km_mxn": 3.9,
-    "per_min_mxn": 0.9,
+    # `per_min_mxn` is what lifts a short trip off the flat 30 and gives the
+    # 30-40 band its width: two 3 km trips are not the same trip if one
+    # crosses the city centre.
+    #
+    #   1 km ->  30 + time      5 km ->  30 + time
+    #   6 km ->  37 + time      9 km ->  59 + time     12 km -> 80 + time
+    #
+    # NOT platform-published figures. Uber Eats and DiDi Food coefficients
+    # are not public; this is one courier's account of what their own card
+    # pays, which is a better source than a curve fitted to a shift total.
+    "minimum_mxn": 30.0,
+    "minimum_covers_km": 5.0,
+    "per_km_beyond_minimum_mxn": 7.15,  # (80 - 30) / (12 - 5)
+    "per_min_mxn": 0.4,
+    # The card's kilometres are ROAD kilometres -- what the app prints -- and
+    # `ref_km` is a straight line between two points. Streets are not
+    # straight: the measured mean ratio of routed distance to great-circle
+    # distance on this graph is 1.449. Charging the card against the straight
+    # line was a unit error that put 91.4% of trips inside the flat minimum,
+    # because a trip the app calls 5 km is only 3.4 km as the crow flies.
+    "route_factor": 1.449,
     # Reference speed used only to derive the straight-line `ref_minutes`
-    # figure from `ref_km` — an assumed average incl. traffic/stops, not a
+    # figure from `ref_km` -- an assumed average incl. traffic/stops, not a
     # real routed ETA (that belongs to `network.py` / the sim engine).
     "ref_speed_kmh": 16.0,
 }
+
+# The longest trip the platform will hand a courier. Reported directly: a
+# delivery does not run past about 12 km. The generator used to produce trips
+# up to 16.4 km purely because the gravity model let a destination land that
+# far away -- nothing bounded it, and nobody had looked at the top of the
+# distribution. A destination drawn beyond this is re-drawn.
+# In ROAD kilometres, like the card. Compared against `ref_km * route_factor`.
+#
+# Solved for, not reported. The courier's km figures and their payout figures
+# could not both hold: with the card they described, a distance distribution
+# whose typical trip is 4-7 km puts MORE trips in the 50-80 band than in
+# 40-50, which they correctly called impossible. So the payout distribution
+# was taken as the firm constraint (80% at 30-40, 15% at 40-50, 5% at 50-80)
+# and the geography solved backwards from it.
+#
+# The card's own arithmetic fixes the band edges in road kilometres:
+#     30-40  ->  up to 5.6 km
+#     40-50  ->  5.6 to 6.8 km
+#     50-80  ->  6.8 to 10.5 km
+# so the distribution has to be near-flat out to about 6.8 km and then stop
+# sharply. Swept over the gravity decay and this ceiling together, the pair
+# that lands it is d0 = 2.6 km with a 7.2 km ceiling: 80.0 / 15.9 / 4.1.
+#
+# Worth stating plainly: this makes the longest delivery about 7.2 km, not
+# the 10-12 the courier recalled. Their payout figures and that ceiling are
+# not compatible, and the payouts were the ones they were sure of.
+MAX_TRIP_KM = 7.2
+# Give up after this many re-draws and keep the last one rather than loop
+# forever in a cell whose reachable destinations are all distant. Logged in
+# aggregate by the caller so a silent truncation cannot hide.
+MAX_DESTINATION_REDRAWS = 12
+
+
+def distance_fare_mxn(ref_km: float, fare: dict[str, float] = FARE_CALIBRATION) -> float:
+    """What the card pays for the distance part of a trip of `ref_km`.
+
+    Flat at `minimum_mxn` up to `minimum_covers_km`, then rising. See
+    `FARE_CALIBRATION` for why the flat region is modelled explicitly.
+    """
+    road_km = ref_km * fare["route_factor"]
+    beyond = max(road_km - fare["minimum_covers_km"], 0.0)
+    return fare["minimum_mxn"] + fare["per_km_beyond_minimum_mxn"] * beyond
+
+
+def effective_per_km_mxn(ref_km: float, fare: dict[str, float] = FARE_CALIBRATION) -> float:
+    """The card's distance payment expressed as one MXN/km figure for THIS
+    trip.
+
+    `OrderOffer` stores the fare decomposed as base + per_km + per_min and
+    recombines them linearly in `gross_payout_mxn`. Rather than change that
+    contract, the whole distance payment is divided back out here with a base
+    of zero, so a stored offer reconstructs its own payout exactly while the
+    CARD that produced it keeps its flat minimum. On a 2 km trip this reads
+    15 MXN/km and on a 10 km trip 6.5 -- which is what a minimum fare means.
+    """
+    if ref_km <= 0.0:
+        return 0.0
+    return distance_fare_mxn(ref_km, fare) / ref_km
+
 
 PREP_TIME_CALIBRATION: dict[str, float] = {
     # Each restaurant's mean prep time is drawn once (uniformly in this
@@ -558,14 +634,42 @@ def build_order_stream(
                     + (1.0 - alpha_now) * model.dest_probs_population[g_idx]
                 )
                 dest_p = dest_p / dest_p.sum()
-                dest_idx = orders_rng.choice(len(model.dest_cells), p=dest_p)
-                dest_cell = model.dest_cells[dest_idx]
-                dest_centroid_lat, dest_centroid_lon = geo.cell_centroid(dest_cell)
-                jitter_r = jitter_radius * np.sqrt(orders_rng.uniform(0.0, 1.0))
-                jitter_bearing = orders_rng.uniform(0.0, 2 * np.pi)
-                dest_lat, dest_lon = _offset_point_km(dest_centroid_lat, dest_centroid_lon, jitter_r, jitter_bearing)
-
-                ref_km = geo.great_circle_km(origin_lat, origin_lon, dest_lat, dest_lon)
+                # Re-draw a destination that lands further than MAX_TRIP_KM.
+                # The gravity model has no notion of how far a platform is
+                # willing to send someone, so without this it produced trips
+                # up to 16.4 km against a reported ceiling of about 12.
+                for _attempt in range(MAX_DESTINATION_REDRAWS):
+                    dest_idx = orders_rng.choice(len(model.dest_cells), p=dest_p)
+                    dest_cell = model.dest_cells[dest_idx]
+                    dest_centroid_lat, dest_centroid_lon = geo.cell_centroid(dest_cell)
+                    jitter_r = jitter_radius * np.sqrt(orders_rng.uniform(0.0, 1.0))
+                    jitter_bearing = orders_rng.uniform(0.0, 2 * np.pi)
+                    dest_lat, dest_lon = _offset_point_km(
+                        dest_centroid_lat, dest_centroid_lon, jitter_r, jitter_bearing
+                    )
+                    ref_km = geo.great_circle_km(origin_lat, origin_lon, dest_lat, dest_lon)
+                    if ref_km * fare["route_factor"] <= MAX_TRIP_KM:
+                        break
+                else:
+                    # Every re-draw landed past the ceiling. Pull the point
+                    # back along the same bearing until it sits exactly on
+                    # it, rather than keeping an over-long trip: a fallback
+                    # that silently exceeds its own cap is worse than one
+                    # that bends a destination, because the cap is what the
+                    # payout distribution was solved against. Measured
+                    # before this existed, the leak produced trips of up to
+                    # 31.8 km against a 7.4 km ceiling.
+                    limit_ref_km = MAX_TRIP_KM / fare["route_factor"]
+                    if ref_km > limit_ref_km > 0.0:
+                        # Straight interpolation toward the origin. At these
+                        # distances the great circle and the chord differ by
+                        # far less than the jitter already applied, so a
+                        # bearing calculation would be false precision.
+                        scale = limit_ref_km / ref_km
+                        dest_lat = origin_lat + (dest_lat - origin_lat) * scale
+                        dest_lon = origin_lon + (dest_lon - origin_lon) * scale
+                        ref_km = geo.great_circle_km(origin_lat, origin_lon, dest_lat, dest_lon)
+                        dest_cell = geo.latlon_to_cell(dest_lat, dest_lon)
                 ref_minutes = ref_km / fare["ref_speed_kmh"] * 60.0
 
                 mean_prep = prep_mean_col[g_idx]
@@ -577,7 +681,9 @@ def build_order_stream(
                     )
                 )
 
-                gross_payout = fare["base_mxn"] + fare["per_km_mxn"] * ref_km + fare["per_min_mxn"] * ref_minutes
+                gross_payout = (
+                    distance_fare_mxn(ref_km, fare) + fare["per_min_mxn"] * ref_minutes
+                )
 
                 conditions_signal = abs(weather_arr[t_idx] - 1.0)
                 tip_pct = float(
@@ -606,8 +712,8 @@ def build_order_stream(
                         dest_lon=dest_lon,
                         ref_km=round(ref_km, 4),
                         ref_minutes=round(ref_minutes, 2),
-                        base_mxn=fare["base_mxn"],
-                        per_km_mxn=fare["per_km_mxn"],
+                        base_mxn=0.0,  # the whole distance payment rides on per_km; see effective_per_km_mxn
+                        per_km_mxn=effective_per_km_mxn(ref_km, fare),
                         per_min_mxn=fare["per_min_mxn"],
                         surge_at_spawn=surge_now,
                         prep_minutes=round(prep_minutes, 2),

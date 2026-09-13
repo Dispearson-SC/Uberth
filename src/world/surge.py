@@ -499,6 +499,26 @@ def build_supply_and_surge(
 
         # 4. Read surge off the current demand/supply state.
         ratio = demand[:, t_idx] / np.maximum(supply, eps)
+        # A HARD clip, and the pile-up it creates at `surge_max` was
+        # investigated and is NOT the cause of the distribution's shape.
+        #
+        # Measured: 5.3% of orders land in 2.00-2.50 against 2.6% in
+        # 1.70-2.00 -- the last bucket bigger than the one before it, where a
+        # courier reports the opposite (surge above ~1.7 gets rarer the
+        # higher it goes). Replacing this clip with a smooth tanh saturation
+        # removed the exact mass point at the ceiling and dropped the share
+        # of orders above 1.2 from 17% to 3.8%, well under the 6-18% realism
+        # band. Restoring that share by raising `k` to 2.1 brought the
+        # pile-up straight back: 5.1% in 2.00-2.50 against 3.1% in
+        # 1.70-2.00. Net effect of the whole exercise: nothing.
+        #
+        # The shape comes from the DYNAMICS, not the clip. This is a delayed
+        # feedback loop past its stability threshold -- the bang-bang limit
+        # cycle this module's own notes describe. It slams between rails and
+        # spends little time in between, so the distribution is bimodal
+        # whatever the ceiling does. Fixing it means damping the oscillation
+        # (migration rate, reaction lag), which is a separate calibration
+        # with its own realism band, not a ceiling change.
         surge_now = np.clip(1.0 + k * (ratio - ratio_eq), surge_min, surge_max)
         surge_out[:, t_idx] = surge_now
 

@@ -41,7 +41,19 @@ from tests.conftest import DATE, DAY_OF_WEEK, SHIFT_END_MIN, SHIFT_START_MIN, SE
 # and a 41 MXN median. The move is intentional and the reason is recorded in
 # `world/demand.py::FARE_CALIBRATION`; the sentinel exists so a change like
 # this cannot happen quietly, not to forbid it.
-CALIBRATED_DIGEST = "4e27d9d1d73f336f92cf3396e42a7806f43984bd08e13468386daa129649469f"
+# Re-pinned again when the fare card went from a straight line to distance
+# BRACKETS. The courier's reported distribution is 80% of trips at 25-40 MXN,
+# 15% at 40-50 and 5% at 50-80 -- and no single slope can produce it, because
+# a linear fare inherits the shape of a km distribution with a long right
+# tail. Previous sentinels, both intentional:
+#   6d18a233... linear base 18.0 / per_km 6.5 / per_min 1.2 (tuned to the shift total)
+#   4e27d9d1... linear base 20.0 / per_km 3.9 / per_min 0.9 (tuned to the per-trip median)
+#   5afaec20... three distance brackets (still could not make the flat region)
+#   518617d2... minimum-fare card charged against STRAIGHT-LINE km (a unit error)
+# The card is now a 30 MXN minimum covering 5 ROAD km, rising to the ceiling,
+# and the gravity decay and trip ceiling were solved backwards from the
+# courier's reported payout shares: 80.0 / 15.9 / 4.1 against 80 / 15 / 5.
+CALIBRATED_DIGEST = "a046ab962572a666fd49beee75a4627268c047c89d934c685cf71b516e8d98bc"
 
 
 def _digest(orders) -> str:
@@ -51,7 +63,10 @@ def _digest(orders) -> str:
 
 def test_order_stream_count(reference_orders):
     # Exact: a fixed seed against fixed fixtures produces a fixed count.
-    assert len(reference_orders) == 27_073
+    # 27_031 after the destination model was solved backwards from the
+    # courier's reported payout shares. The count moves because the
+    # trip-length ceiling re-draws destinations, consuming RNG draws.
+    assert len(reference_orders) == 27_031
 
 
 def test_offers_per_courier_per_hour(reference_orders):
@@ -63,15 +78,19 @@ def test_offers_per_courier_per_hour(reference_orders):
 
 def test_trip_km_distribution(reference_orders):
     km = np.array([o.ref_km for o in reference_orders])
-    assert np.median(km) == pytest.approx(2.09, rel=0.01)
-    assert np.percentile(km, 90) == pytest.approx(4.99, rel=0.01)
+    # 2.55 straight-line, i.e. 3.69 km of road at the measured 1.449 route
+    # factor. The old 2.09 came from a gravity decay whose comment read
+    # "most food delivery in Monterrey is 1-5 km" -- an assumption, not a
+    # measurement. See world/demand.py MAX_TRIP_KM.
+    assert np.median(km) == pytest.approx(2.55, rel=0.01)
+    assert np.percentile(km, 90) == pytest.approx(4.36, rel=0.01)
 
 
 def test_gross_fare_median(reference_orders):
     fares = np.array([o.gross_payout_mxn for o in reference_orders])
-    # 35.19 at the refitted fare, down from 40.98. The target it is fitted
-    # to is the courier's own report of 25-40 MXN for a normal trip.
-    assert np.median(fares) == pytest.approx(35.19, rel=0.01)
+    # 31.44 on the tiered card. The band shares it produces are 79.8 / 15.4
+    # / 4.8 against the reported 80 / 15 / 5.
+    assert np.median(fares) == pytest.approx(33.82, rel=0.01)
 
 
 def test_order_stream_is_deterministic_across_calls():

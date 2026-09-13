@@ -31,12 +31,14 @@ def _share_above_1_2(start_min: int, end_min: int) -> float:
 
 def test_early_shift_realism_band_share():
     # 05:00-14:00
-    assert _share_above_1_2(300, 840) == pytest.approx(0.171, rel=0.02)
+    # 16.6%, inside the 6-18% band.
+    assert _share_above_1_2(300, 840) == pytest.approx(0.166, rel=0.02)
 
 
 def test_night_shift_realism_band_share():
     # 18:00-02:00, crosses midnight
-    assert _share_above_1_2(1080, 1560) == pytest.approx(0.104, rel=0.02)
+    # 9.8%, inside the 6-18% band.
+    assert _share_above_1_2(1080, 1560) == pytest.approx(0.098, rel=0.02)
 
 
 def test_day_shift_known_limitation_share():

@@ -1,0 +1,307 @@
+{
+  "schema_version": 1,
+  "seed": 42,
+  "window": {
+    "name": "reference",
+    "label": "Reference 14:00-22:00"
+  },
+  "payout_floor_mxn": 40.0,
+  "days": [
+    {
+      "date": "2026-07-15",
+      "weekday": "Wednesday",
+      "label": "Mild and dry",
+      "note": "33.2 C, no rain \u2014 the easy afternoon",
+      "conditions": {
+        "apparent_min": 28.3,
+        "apparent_max": 33.2,
+        "minutes_over_40c": 0,
+        "raining_minutes": 0,
+        "peak_rain_mm_per_hour": 0.0
+      },
+      "variants": {
+        "normal": {
+          "files": {
+            "smart": "day_2026-07-15_normal_smart.json",
+            "floor": "day_2026-07-15_normal_floor.json"
+          },
+          "summary": {
+            "smart": {
+              "take_home": 1108.8,
+              "mxn_h": 136.9,
+              "mxn_km": 8.16,
+              "km": 135.9,
+              "deliveries": 17,
+              "per_hour": 2.1,
+              "mxn_per_trip": 65.2
+            },
+            "floor": {
+              "take_home": 1537.3,
+              "mxn_h": 175.7,
+              "mxn_km": 7.55,
+              "km": 203.7,
+              "deliveries": 23,
+              "per_hour": 2.63,
+              "mxn_per_trip": 66.8
+            }
+          },
+          "closures": 0,
+          "closures_met": {}
+        },
+        "hostile": {
+          "files": {
+            "smart": "day_2026-07-15_hostile_smart.json",
+            "floor": "day_2026-07-15_hostile_floor.json"
+          },
+          "summary": {
+            "smart": {
+              "take_home": 1213.2,
+              "mxn_h": 148.3,
+              "mxn_km": 8.62,
+              "km": 140.8,
+              "deliveries": 19,
+              "per_hour": 2.32,
+              "mxn_per_trip": 63.9
+            },
+            "floor": {
+              "take_home": 1657.1,
+              "mxn_h": 190.1,
+              "mxn_km": 7.96,
+              "km": 208.1,
+              "deliveries": 24,
+              "per_hour": 2.75,
+              "mxn_per_trip": 69.0
+            }
+          },
+          "closures": 5,
+          "closures_met": {
+            "smart": 3,
+            "floor": 2
+          }
+        }
+      }
+    },
+    {
+      "date": "2026-07-10",
+      "weekday": "Friday",
+      "label": "Reference Friday",
+      "note": "34.3 C, trace rain \u2014 the shift every other figure is quoted on",
+      "conditions": {
+        "apparent_min": 29.1,
+        "apparent_max": 34.3,
+        "minutes_over_40c": 0,
+        "raining_minutes": 240,
+        "peak_rain_mm_per_hour": 0.5
+      },
+      "variants": {
+        "normal": {
+          "files": {
+            "smart": "day_2026-07-10_normal_smart.json",
+            "floor": "day_2026-07-10_normal_floor.json"
+          },
+          "summary": {
+            "smart": {
+              "take_home": 1059.3,
+              "mxn_h": 132.4,
+              "mxn_km": 9.08,
+              "km": 116.6,
+              "deliveries": 19,
+              "per_hour": 2.38,
+              "mxn_per_trip": 55.8
+            },
+            "floor": {
+              "take_home": 1585.1,
+              "mxn_h": 189.1,
+              "mxn_km": 9.81,
+              "km": 161.6,
+              "deliveries": 24,
+              "per_hour": 2.86,
+              "mxn_per_trip": 66.0
+            }
+          },
+          "closures": 0,
+          "closures_met": {}
+        },
+        "hostile": {
+          "files": {
+            "smart": "day_2026-07-10_hostile_smart.json",
+            "floor": "day_2026-07-10_hostile_floor.json"
+          },
+          "summary": {
+            "smart": {
+              "take_home": 953.4,
+              "mxn_h": 116.3,
+              "mxn_km": 8.8,
+              "km": 108.4,
+              "deliveries": 19,
+              "per_hour": 2.32,
+              "mxn_per_trip": 50.2
+            },
+            "floor": {
+              "take_home": 1375.4,
+              "mxn_h": 152.3,
+              "mxn_km": 7.25,
+              "km": 189.7,
+              "deliveries": 23,
+              "per_hour": 2.55,
+              "mxn_per_trip": 59.8
+            }
+          },
+          "closures": 5,
+          "closures_met": {
+            "smart": 2,
+            "floor": 3
+          }
+        }
+      }
+    },
+    {
+      "date": "2026-08-04",
+      "weekday": "Tuesday",
+      "label": "Rain all shift",
+      "note": "38.1 C, 15.5 mm across 8 of 8 hours",
+      "conditions": {
+        "apparent_min": 30.5,
+        "apparent_max": 38.1,
+        "minutes_over_40c": 0,
+        "raining_minutes": 480,
+        "peak_rain_mm_per_hour": 4.4
+      },
+      "variants": {
+        "normal": {
+          "files": {
+            "smart": "day_2026-08-04_normal_smart.json",
+            "floor": "day_2026-08-04_normal_floor.json"
+          },
+          "summary": {
+            "smart": {
+              "take_home": 1097.7,
+              "mxn_h": 133.3,
+              "mxn_km": 10.05,
+              "km": 109.3,
+              "deliveries": 17,
+              "per_hour": 2.06,
+              "mxn_per_trip": 64.6
+            },
+            "floor": {
+              "take_home": 871.4,
+              "mxn_h": 106.5,
+              "mxn_km": 6.96,
+              "km": 125.2,
+              "deliveries": 14,
+              "per_hour": 1.71,
+              "mxn_per_trip": 62.2
+            }
+          },
+          "closures": 0,
+          "closures_met": {}
+        },
+        "hostile": {
+          "files": {
+            "smart": "day_2026-08-04_hostile_smart.json",
+            "floor": "day_2026-08-04_hostile_floor.json"
+          },
+          "summary": {
+            "smart": {
+              "take_home": 1277.3,
+              "mxn_h": 157.4,
+              "mxn_km": 10.19,
+              "km": 125.3,
+              "deliveries": 20,
+              "per_hour": 2.46,
+              "mxn_per_trip": 63.9
+            },
+            "floor": {
+              "take_home": 1352.6,
+              "mxn_h": 157.3,
+              "mxn_km": 7.77,
+              "km": 174.0,
+              "deliveries": 22,
+              "per_hour": 2.56,
+              "mxn_per_trip": 61.5
+            }
+          },
+          "closures": 5,
+          "closures_met": {
+            "smart": 2,
+            "floor": 0
+          }
+        }
+      }
+    },
+    {
+      "date": "2026-06-18",
+      "weekday": "Thursday",
+      "label": "Extreme heat",
+      "note": "41.9 C, above 40 for three hours, rain at the dinner peak",
+      "conditions": {
+        "apparent_min": 35.3,
+        "apparent_max": 41.9,
+        "minutes_over_40c": 153,
+        "raining_minutes": 120,
+        "peak_rain_mm_per_hour": 2.0
+      },
+      "variants": {
+        "normal": {
+          "files": {
+            "smart": "day_2026-06-18_normal_smart.json",
+            "floor": "day_2026-06-18_normal_floor.json"
+          },
+          "summary": {
+            "smart": {
+              "take_home": 984.5,
+              "mxn_h": 120.3,
+              "mxn_km": 8.27,
+              "km": 119.0,
+              "deliveries": 15,
+              "per_hour": 1.83,
+              "mxn_per_trip": 65.6
+            },
+            "floor": {
+              "take_home": 1410.8,
+              "mxn_h": 157.9,
+              "mxn_km": 6.96,
+              "km": 202.6,
+              "deliveries": 21,
+              "per_hour": 2.35,
+              "mxn_per_trip": 67.2
+            }
+          },
+          "closures": 0,
+          "closures_met": {}
+        },
+        "hostile": {
+          "files": {
+            "smart": "day_2026-06-18_hostile_smart.json",
+            "floor": "day_2026-06-18_hostile_floor.json"
+          },
+          "summary": {
+            "smart": {
+              "take_home": 717.5,
+              "mxn_h": 80.6,
+              "mxn_km": 6.72,
+              "km": 106.9,
+              "deliveries": 14,
+              "per_hour": 1.57,
+              "mxn_per_trip": 51.3
+            },
+            "floor": {
+              "take_home": 1549.5,
+              "mxn_h": 177.8,
+              "mxn_km": 7.31,
+              "km": 211.9,
+              "deliveries": 22,
+              "per_hour": 2.52,
+              "mxn_per_trip": 70.4
+            }
+          },
+          "closures": 5,
+          "closures_met": {
+            "smart": 2,
+            "floor": 2
+          }
+        }
+      }
+    }
+  ]
+}

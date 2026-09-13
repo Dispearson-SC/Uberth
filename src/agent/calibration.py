@@ -55,6 +55,14 @@ from __future__ import annotations
 # "take the nearest of what is on screen" picks the only card on screen, so a
 # nearest-first baseline is arithmetically identical to accepting everything.
 # It is a menu heuristic, and this app is a flow.
+# KEPT AT 40 AFTER THE FARE REFIT, DELIBERATELY. The median offer is now
+# 35.19 MXN, so a 40 floor sits ABOVE the median and refuses more than half of
+# what it is shown. That is not an oversight and it is not a bug to be
+# "corrected" back down to the median: a payout floor's whole job is to be
+# selective using one number a courier can hold in their head, and a floor at
+# or below the median selects nothing. The user, who drives, chose 40 for
+# exactly that reason -- the point is to lift the rate with a simple rule.
+#
 # CHANGED TO 40 BY THE USER. The reasoning above is kept rather than
 # rewritten, because it is what makes this change legible: 55 was not a
 # guess, it was the sweep's reference-strongest floor, chosen deliberately to

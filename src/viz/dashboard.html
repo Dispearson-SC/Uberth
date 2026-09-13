@@ -225,7 +225,8 @@
   }
   button:hover { border-color: var(--accent-smart); }
   #playBtn { min-width: 74px; font-weight: 700; }
-  #metricsBtn { margin-left: auto; }
+  #daySelect { margin-left: auto; }
+  #metricsBtn { margin-left: 8px; }
   #scenarioBtn { margin-left: 8px; }
   #scenarioBtn.active { background: rgba(255,120,80,0.2); border-color: #ff7850; color: #ff7850; }
   #forkBtn:disabled { opacity: 0.35; cursor: not-allowed; }
@@ -387,6 +388,7 @@
         <option value="50">50x</option>
       </select>
       <span id="eventTicker"></span>
+      <select id="daySelect" title="Which recorded day to play. Every one is real measured Monterrey weather; the hostile toggle adds road closures to whichever day is showing."></select>
       <button id="metricsBtn" title="Open the full metric read for both couriers over the map (M)">
         &#128202; Metrics
       </button>
@@ -770,6 +772,11 @@
   // must never stop the page from opening. The scenario button simply does not
   // appear when they are absent.
   const DUEL_NAMES = ["duel_smart", "duel_floor"];
+  // Several recorded days, each one available clean and with road closures.
+  // The manifest is optional and lazily consumed: a day's four files are
+  // fetched only when that day is selected, because loading eight shifts up
+  // front would cost seconds of blank screen for scenarios nobody may open.
+  let dayManifest = null;
   const replays = {}; // name -> parsed document (post-index)
 
   function fileStatusHTML(have) {
@@ -790,6 +797,10 @@
     } catch (e) {
       return null; // a missing REQUIRED file -> fall back to manual loading
     }
+    try {
+      const res = await fetch("../../replays/days.json");
+      if (res.ok) dayManifest = await res.json();
+    } catch (e) { /* optional */ }
     // The duel pair is fetched separately and its failure is swallowed: it is
     // an extra scenario, not a dependency.
     await Promise.all(DUEL_NAMES.map(async name => {
@@ -870,6 +881,7 @@
   const app = {
     laneADataset: "smart", // 'smart' | 'fork'
     scenario: "normal", // 'normal' | 'hostile'
+    day: null, // null = the reference recording; otherwise an ISO date
     currentMinute: 0,
     minMinute: 0,
     maxMinute: 0,
@@ -882,8 +894,37 @@
   // the hostile day is that BOTH couriers face it. Showing one courier's
   // storm against the other's clear afternoon would be the comparison this
   // project has already had to correct once.
-  function laneAKey() { return app.scenario === "hostile" ? "duel_smart" : app.laneADataset; }
-  function laneBKey() { return app.scenario === "hostile" ? "duel_floor" : "fixed"; }
+  function dayFileKey(tag) {
+    // A day's own recording for this variant. Same shape for both lanes, so
+    // the scenario toggle means the same thing on a day as it does on the
+    // reference set: it swaps the WORLD, never one courier's world.
+    return `day_${app.day}_${app.scenario}_${tag}`;
+  }
+  function laneAKey() {
+    if (app.day) return dayFileKey("smart");
+    return app.scenario === "hostile" ? "duel_smart" : app.laneADataset;
+  }
+  function laneBKey() {
+    if (app.day) return dayFileKey("floor");
+    return app.scenario === "hostile" ? "duel_floor" : "fixed";
+  }
+  function dayEntry(iso) {
+    return (dayManifest && dayManifest.days || []).find(d => d.date === iso) || null;
+  }
+  function laneLabel(key) {
+    if (LANE_LABELS[key]) return LANE_LABELS[key];
+    // day_<iso>_<variant>_<tag>
+    const parts = String(key).split("_");
+    const tag = parts[parts.length - 1];
+    const entry = dayEntry(app.day);
+    const who = tag === "smart" ? "SMART" : "FIXED THRESHOLD (40 MXN floor)";
+    const when = entry ? `${entry.label}` : app.day;
+    return `${who} — ${when}${app.scenario === "hostile" ? ", 5 closures" : ""}`;
+  }
+  function laneColor(key) {
+    if (LANE_COLORS[key]) return LANE_COLORS[key];
+    return String(key).endsWith("smart") ? LANE_COLORS.smart : LANE_COLORS.fixed;
+  }
   function laneADoc() { return replays[laneAKey()]; }
   function laneBDoc() { return replays[laneBKey()]; }
   function hasDuel() { return !!(replays.duel_smart && replays.duel_floor); }
@@ -900,8 +941,8 @@
   function renderCounters() {
     const el = document.getElementById("counters");
     const lanes = [
-      { key: "A", doc: laneADoc(), datasetKey: app.laneADataset, color: LANE_COLORS[laneAKey()], label: LANE_LABELS[laneAKey()] },
-      { key: "B", doc: laneBDoc(), datasetKey: "fixed", color: LANE_COLORS[laneBKey()], label: LANE_LABELS[laneBKey()] },
+      { key: "A", doc: laneADoc(), datasetKey: app.laneADataset, color: laneColor(laneAKey()), label: laneLabel(laneAKey()) },
+      { key: "B", doc: laneBDoc(), datasetKey: "fixed", color: laneColor(laneBKey()), label: laneLabel(laneBKey()) },
     ];
     let html = "";
     const vals = {};
@@ -924,7 +965,7 @@
     if (b.km_traveled > 0 && b.earnings_mxn > 0) {
       const earnRatio = (a.earnings_mxn / b.earnings_mxn) * 100;
       const kmSaved = (1 - a.km_traveled / b.km_traveled) * 100;
-      headline = `So far, <b>${LANE_LABELS[laneAKey()]}</b> has earned <b>${earnRatio.toFixed(0)}%</b> of ` +
+      headline = `So far, <b>${laneLabel(laneAKey())}</b> has earned <b>${earnRatio.toFixed(0)}%</b> of ` +
         `<b>fixed_threshold</b>'s money on <b>${kmSaved.toFixed(0)}%</b> less driving.`;
     }
     html += `<div id="headline">${headline}</div>`;
@@ -992,8 +1033,8 @@
 
   function renderWhyPanel() {
     const lanes = [
-      { doc: laneADoc(), color: LANE_COLORS[laneAKey()], label: LANE_LABELS[laneAKey()] },
-      { doc: laneBDoc(), color: LANE_COLORS[laneBKey()], label: LANE_LABELS[laneBKey()] },
+      { doc: laneADoc(), color: laneColor(laneAKey()), label: laneLabel(laneAKey()) },
+      { doc: laneBDoc(), color: laneColor(laneBKey()), label: laneLabel(laneBKey()) },
     ];
     document.getElementById("decisionCards").innerHTML = lanes.map(decisionCardHTML).join("");
   }
@@ -1093,8 +1134,8 @@
 
   function renderTripsPanel() {
     const lanes = [
-      { doc: laneADoc(), color: LANE_COLORS[laneAKey()], label: LANE_LABELS[laneAKey()] },
-      { doc: laneBDoc(), color: LANE_COLORS[laneBKey()], label: LANE_LABELS[laneBKey()] },
+      { doc: laneADoc(), color: laneColor(laneAKey()), label: laneLabel(laneAKey()) },
+      { doc: laneBDoc(), color: laneColor(laneBKey()), label: laneLabel(laneBKey()) },
     ];
     document.getElementById("tripCards").innerHTML = lanes.map(tripCardHTML).join("");
   }
@@ -1116,10 +1157,10 @@
       if (s) bTrail.push([s.lat, s.lon]);
     }
 
-    mv.setTrail("A", aTrail, LANE_COLORS[laneAKey()]);
-    mv.setTrail("B", bTrail, LANE_COLORS[laneBKey()]);
-    mv.setCourier("A", aState.lat, aState.lon, LANE_COLORS[laneAKey()], LANE_LABELS[laneAKey()].split(" ")[0]);
-    mv.setCourier("B", bState.lat, bState.lon, LANE_COLORS[laneBKey()], "FIXED");
+    mv.setTrail("A", aTrail, laneColor(laneAKey()));
+    mv.setTrail("B", bTrail, laneColor(laneBKey()));
+    mv.setCourier("A", aState.lat, aState.lon, laneColor(laneAKey()), laneLabel(laneAKey()).split(" ")[0]);
+    mv.setCourier("B", bState.lat, bState.lon, laneColor(laneBKey()), "FIXED");
 
     // Pickup / dropoff markers within a trailing visibility window, so the
     // map does not fill up with every stop from eight hours ago.
@@ -1157,11 +1198,11 @@
   }
 
   function renderLegend() {
-    const laneAColor = LANE_COLORS[laneAKey()];
-    const laneALabel = LANE_LABELS[laneAKey()].split(" ")[0];
+    const laneAColor = laneColor(laneAKey());
+    const laneALabel = laneLabel(laneAKey()).split(" ")[0];
     document.getElementById("legend").innerHTML = `
       <div class="row"><span class="dot" style="background:${laneAColor}"></span>${laneALabel} courier</div>
-      <div class="row"><span class="dot" style="background:${LANE_COLORS[laneBKey()]}"></span>FIXED courier</div>
+      <div class="row"><span class="dot" style="background:${laneColor(laneBKey())}"></span>FIXED courier</div>
       <div class="row"><span class="dot" style="background:#3ddc84;border-radius:2px;clip-path:polygon(50% 0,0 100%,100% 100%)"></span>Pickup (restaurant)</div>
       <div class="row"><span class="dot" style="background:#4da3ff;border-radius:2px"></span>Dropoff (customer)</div>
       <div class="row"><span class="dot" style="background:#ffcc4d"></span>Perceived world event</div>
@@ -1234,9 +1275,66 @@
       }
     });
 
+    const daySelect = document.getElementById("daySelect");
+    const days = (dayManifest && dayManifest.days) || [];
+    if (!days.length) {
+      daySelect.style.display = "none";
+    } else {
+      daySelect.innerHTML =
+        `<option value="">Reference recording</option>` +
+        days.map(d => `<option value="${d.date}">${d.label} — ${d.date} (${d.weekday.slice(0, 3)})</option>`).join("");
+      daySelect.addEventListener("change", async e => {
+        const iso = e.target.value || null;
+        if (iso) {
+          // Fetch this day's four files once, then keep them.
+          const entry = dayEntry(iso);
+          const wanted = [];
+          for (const variant of ["normal", "hostile"]) {
+            const files = ((entry.variants || {})[variant] || {}).files || {};
+            for (const [tag, file] of Object.entries(files)) {
+              wanted.push([`day_${iso}_${variant}_${tag}`, file]);
+            }
+          }
+          const missing = wanted.filter(([key]) => !replays[key]);
+          if (missing.length) {
+            daySelect.disabled = true;
+            document.getElementById("loadStatus").textContent = `Loading ${iso} ...`;
+            try {
+              await Promise.all(missing.map(async ([key, file]) => {
+                const res = await fetch("../../replays/" + file);
+                if (!res.ok) throw new Error(file + ": HTTP " + res.status);
+                replays[key] = indexReplay(await res.json());
+              }));
+            } catch (err) {
+              document.getElementById("loadStatus").textContent = "Could not load " + iso + " — " + err.message;
+              daySelect.value = app.day || "";
+              daySelect.disabled = false;
+              return;
+            }
+            daySelect.disabled = false;
+          }
+        }
+        app.day = iso;
+        // The fork is a beat scripted into the reference recording only.
+        const forkBtn = document.getElementById("forkBtn");
+        forkBtn.disabled = !!iso || app.scenario === "hostile";
+        if (iso && app.laneADataset === "fork") {
+          app.laneADataset = "smart";
+          forkBtn.classList.remove("active");
+        }
+        setPlaying(false);
+        recomputeRange();
+        renderAll();
+        document.getElementById("loadStatus").textContent = iso
+          ? `${dayEntry(iso).label} — ${iso}, ${app.scenario === "hostile" ? "5 road closures" : "as it was"}`
+          : `Reference recording — seed ${replays.smart.seed}`;
+      });
+    }
+
     const scenarioBtn = document.getElementById("scenarioBtn");
-    if (!hasDuel()) {
-      // No duel recorded. Hide the control rather than offer a dead button.
+    if (!hasDuel() && !days.length) {
+      // Nothing hostile recorded at all. Hide the control rather than offer
+      // a dead button.
       scenarioBtn.style.display = "none";
     } else {
       scenarioBtn.addEventListener("click", () => {
@@ -1248,7 +1346,7 @@
         // forked hostile recording, so the button is disabled rather than
         // silently doing nothing.
         const forkBtn = document.getElementById("forkBtn");
-        forkBtn.disabled = hostile;
+        forkBtn.disabled = hostile || !!app.day;
         if (hostile && app.laneADataset === "fork") {
           app.laneADataset = "smart";
           forkBtn.classList.remove("active");
@@ -1484,8 +1582,8 @@
     const overlay = document.getElementById("metricsOverlay");
     if (!overlay.classList.contains("open")) return;
     const lanes = [
-      { doc: laneADoc(), color: LANE_COLORS[laneAKey()], label: LANE_LABELS[laneAKey()] },
-      { doc: laneBDoc(), color: LANE_COLORS[laneBKey()], label: LANE_LABELS[laneBKey()] },
+      { doc: laneADoc(), color: laneColor(laneAKey()), label: laneLabel(laneAKey()) },
+      { doc: laneBDoc(), color: laneColor(laneBKey()), label: laneLabel(laneBKey()) },
     ];
     const metrics = lanes.map(l => laneMetrics(l.doc, app.currentMinute));
     document.getElementById("metricsSub").textContent =
