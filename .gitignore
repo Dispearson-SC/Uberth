@@ -17,3 +17,12 @@ fixtures/raw/tomtom_monterrey_areaanalysis.json
 Docs/*
 !Docs/*.md
 !Docs/architecture/
+
+# Claude Code project config. Kept OUT of the repository on purpose: `.mcp.json`
+# names a private Coolify endpoint, and this repository is public. The token
+# itself is never in the file -- it is a ${COOLIFY_TOKEN} reference read from
+# the environment -- but the endpoint is still infrastructure nobody needs to
+# know about. Delete these two lines if this ever becomes a shared, private repo
+# and the MCP server should travel with it.
+.mcp.json
+.claude/
