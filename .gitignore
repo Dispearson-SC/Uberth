@@ -26,3 +26,8 @@ Docs/*
 # and the MCP server should travel with it.
 .mcp.json
 .claude/
+
+# Capturas para la galería del pitch. Locales a propósito: son material de
+# presentación, no del proyecto, y son 2.6 MB de JPEG que nadie que clone el
+# repo necesita. El tablero que las produce sí está versionado.
+screenshots/
