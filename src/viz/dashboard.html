@@ -30,22 +30,38 @@
         onload="window.__leafletReady = true"
         onerror="window.__leafletFailed = true"></script>
 
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <style>
+  /* Light theme, from the "Dashboard replica design" project. The palette is
+     an inversion, not a tint: this page used to be a dark console and is now
+     a white document with the map as its ground, so anything that relied on
+     a dark backdrop for contrast had to be re-picked rather than lightened.
+     One collision is inherited from the design and kept deliberately: the
+     SMART courier and the "Final" dropoff pin are the same blue. The pins
+     carry a lane-coloured ring, which is what still tells them apart. */
   :root {
-    --bg: #0d1117;
-    --panel: #161b26;
-    --panel-2: #1c2333;
-    --border: #2a3348;
-    --text: #e6ebf5;
-    --text-dim: #93a0b8;
-    --accent-smart: #4da3ff;
-    --accent-fork: #b06bff;
-    --accent-fixed: #ffb454;
-    --good: #3ddc84;
-    --bad: #ff5d6c;
-    --neutral: #93a0b8;
-    --warn: #ffcc4d;
-    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --bg: #ffffff;
+    --panel: #ffffff;
+    --panel-2: #f7f8f9;
+    --border: #d8dade;
+    --border-soft: #e2e3e6;
+    --text: #1a1a1a;
+    --text-mid: #5a5f68;
+    --text-dim: #8a8d92;
+    --accent-smart: #2f6fed;
+    --accent-fork: #7b5cd6;
+    --accent-fixed: #e8891c;
+    --good: #2e9e4f;
+    --bad: #d1372a;
+    --neutral: #8a8d92;
+    --warn: #e8c11c;
+    --closure: #e0483f;
+    --map-ground: #e9ebe6;
+    /* One shadow for every floating island, so they read as one surface
+       family rather than as separately-styled boxes. */
+    --island: 0 6px 18px rgba(20, 20, 30, 0.14);
+    font-family: Inter, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -57,33 +73,33 @@
   #app { display: flex; flex-direction: column; height: 100vh; }
 
   header {
-    display: flex; align-items: baseline; gap: 12px;
-    padding: 10px 16px; border-bottom: 1px solid var(--border);
-    background: var(--panel); flex: 0 0 auto;
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 0 14px; height: 34px; border-bottom: 1px solid var(--border-soft);
+    background: var(--panel); flex: 0 0 34px;
   }
-  header h1 { font-size: 17px; margin: 0; font-weight: 700; }
-  header .subtitle { color: var(--text-dim); font-size: 12px; }
+  header h1 { font-size: 13.5px; margin: 0; font-weight: 700; }
+  header .subtitle { color: var(--text-mid); font-size: 11.5px; }
   header .spacer { flex: 1; }
-  #loadStatus { font-size: 12px; color: var(--text-dim); }
+  #loadStatus { font-size: 11.5px; color: var(--text); }
 
   #main {
     flex: 1 1 auto; display: flex; min-height: 0;
   }
   #mapCol { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
   #mapWrap { flex: 1 1 auto; position: relative; min-height: 0; }
-  #map, #canvasMap { position: absolute; inset: 0; width: 100%; height: 100%; background: #0b1420; }
+  #map, #canvasMap { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--map-ground); }
   #canvasMap { display: none; }
 
   #legend {
     position: absolute; left: 10px; bottom: 10px; z-index: 500;
-    background: rgba(13,17,23,0.88); border: 1px solid var(--border);
+    background: var(--panel); border: 1px solid var(--border); box-shadow: var(--island);
     border-radius: 8px; padding: 8px 10px; font-size: 11px; color: var(--text-dim);
     max-width: 260px;
   }
   #legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
   #legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
   .courier-tip {
-    background: rgba(13,17,23,0.9) !important; color: var(--text) !important;
+    background: var(--panel) !important; color: var(--text) !important; border: 1px solid var(--border) !important;
     border: none !important; box-shadow: none !important; font-weight: 700; font-size: 10px;
     padding: 2px 6px !important;
   }
@@ -92,10 +108,10 @@
      and stays narrow: it is a glance, not a report -- the report is in the
      metrics modal. */
   #surgePanel {
-    position: absolute; right: 10px; bottom: 10px; z-index: 500;
-    background: rgba(13,17,23,0.9); border: 1px solid var(--border);
+    position: absolute; right: 407px; bottom: 44px; z-index: 560;
+    background: var(--panel); border: 1px solid var(--border); box-shadow: var(--island);
     border-radius: 8px; padding: 9px 11px; font-size: 11px; color: var(--text-dim);
-    width: 252px; display: none;
+    width: 258px; display: none; border-radius: 6px;
   }
   #surgePanel.on { display: block; }
   #surgePanel h3 {
@@ -120,7 +136,7 @@
      does not support. It is small, but it is not optional. */
   #surgePanel .sp-note {
     margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--border);
-    color: #6b7891; font-size: 10px; line-height: 1.35;
+    color: var(--text-dim); font-size: 10px; line-height: 1.35;
   }
   #surgeBtn.active { background: rgba(255,107,44,0.18); border-color: #ff6b2c; color: #ff9a5c; }
 
@@ -134,10 +150,10 @@
   .onshift-head b { color: var(--text); font-size: 11px; letter-spacing: 0; }
   .onshift-bar {
     display: flex; height: 9px; border-radius: 5px; overflow: hidden;
-    background: #161c26; border: 1px solid var(--border);
+    background: var(--panel-2); border: 1px solid var(--border);
   }
   .onshift-bar .work { background: #3ddc84; }
-  .onshift-bar .idle { background: #4a5568; }
+  .onshift-bar .idle { background: #c3c7ce; }
   .onshift-legend {
     display: flex; justify-content: space-between; gap: 8px;
     margin-top: 4px; font-size: 10.5px; color: var(--text-dim);
@@ -148,7 +164,7 @@
     margin-right: 4px; vertical-align: -1px;
   }
   .onshift-legend i.work { background: #3ddc84; }
-  .onshift-legend i.idle { background: #4a5568; }
+  .onshift-legend i.idle { background: #c3c7ce; }
 
   #netBadge {
     position: absolute; right: 10px; top: 10px; z-index: 500;
@@ -157,37 +173,71 @@
     display: none;
   }
 
+  /* Two floating islands over the map, not a column beside it. The map runs
+     full-bleed underneath; the panels annotate it. `pointer-events` stays on
+     for the islands but the gap between them lets the map be dragged. */
   #sidebar {
-    flex: 0 0 380px; display: flex; flex-direction: column;
-    border-left: 1px solid var(--border); background: var(--panel);
-    min-height: 0;
+    position: absolute; top: 14px; right: 14px; bottom: 14px; width: 379px;
+    z-index: 600; display: flex; flex-direction: column; gap: 14px;
+    font-size: 12px; min-height: 0;
+  }
+  .island {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: var(--island);
   }
 
-  #counters { flex: 0 0 auto; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  /* The counters take what they need and give the rest away; the detail
+     island keeps a floor, because an offer card squeezed into 200px is not
+     readable and that is the panel the whole design leads with. */
+  /* Both islands together need more height than a 654px map has, so one of
+     them scrolls. It is this one: the counters are a glance, the reasoning
+     below is a read, and squeezing the thing people read to keep a fixed
+     read-out whole is the wrong way round. Capped at half the column so the
+     offer card always has room. */
+  #counters {
+    flex: 0 0 auto; padding: 12px 14px; overflow-y: auto; max-height: 52%;
+  }
+  #counters::-webkit-scrollbar { width: 6px; }
+  #counters::-webkit-scrollbar-thumb { background: #d5d8dd; border-radius: 3px; }
   .lane-counters { margin-bottom: 10px; }
   .lane-counters:last-child { margin-bottom: 0; }
   .lane-title {
-    display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12px;
-    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;
+    display: flex; align-items: flex-start; gap: 6px; font-weight: 700; font-size: 11.5px;
+    text-transform: uppercase; line-height: 1.4; margin-bottom: 10px;
   }
-  .lane-title .swatch { width: 10px; height: 10px; border-radius: 50%; }
-  .counter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+  .lane-title .swatch { width: 8px; height: 8px; border-radius: 50%; margin-top: 3px; flex: 0 0 auto; }
+  .lane-counters { margin-bottom: 12px; }
+  /* A bordered 2x2 grid rather than four separate chips: the design reads
+     the four figures as one block per courier, and the shared rules are what
+     make it read that way. */
+  .counter-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+  }
   .counter {
-    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
-    padding: 6px 8px;
+    background: var(--panel); padding: 8px 10px;
+    border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);
   }
-  .counter .value { font-size: 19px; font-weight: 800; line-height: 1.15; }
-  .counter .value.km { color: var(--warn); }
-  .counter .label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
+  .counter:nth-child(2n) { border-right: none; }
+  .counter:nth-last-child(-n+2) { border-bottom: none; }
+  .counter .value { font-size: 22px; font-weight: 700; line-height: 1.15; }
+  .counter .value .unit { font-size: 10px; font-weight: 700; color: var(--text-dim); }
+  .counter .value.km .unit { color: var(--accent-fixed); }
+  .counter .label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
   #headline {
-    font-size: 12px; color: var(--text-dim); margin-top: 8px; padding-top: 8px;
+    font-size: 11.5px; color: var(--text-mid); margin-top: 8px; padding-top: 8px;
     border-top: 1px dashed var(--border); line-height: 1.4;
   }
   #headline b { color: var(--text); }
 
-  #whyPanel {
-    flex: 1 1 0; overflow-y: auto; padding: 12px 14px; min-height: 0;
+  /* The reasoning and the trip list share the second island and one scroll
+     container, the way the design has them. */
+  #detailIsland {
+    flex: 1 1 auto; min-height: 260px; overflow-y: auto; padding: 14px 16px;
   }
+  #detailIsland::-webkit-scrollbar { width: 6px; }
+  #detailIsland::-webkit-scrollbar-thumb { background: #d5d8dd; border-radius: 3px; }
+  #whyPanel { margin-bottom: 16px; }
   #whyPanel h2, #tripsPanel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 8px 0; color: var(--text-dim); }
 
   #tripsPanel {
@@ -273,28 +323,104 @@
   .factor-row .note { flex: 1 1 auto; min-width: 0; color: var(--text-dim); font-style: italic; overflow-wrap: anywhere; }
   .no-decision { color: var(--text-dim); font-size: 12px; font-style: italic; }
 
-  #transport {
-    flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--panel);
-    padding: 8px 16px 12px 16px;
+  /* ---- the offer card -------------------------------------------------
+     The design draws one offer three ways: undecided on white, refused on
+     red, taken on green. The state is NOT a click here -- this is a
+     recording, the shift already happened, and a button that changed the
+     outcome would be a lie. It is driven by what the agent actually did at
+     the scrub minute, and the Aceptar/Rechazar pair is only drawn while the
+     recorded decision is still pending, exactly as the design gates it. */
+  .offer-card {
+    border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px 14px;
+    background: var(--panel); transition: background .2s, border-color .2s;
   }
-  #scrubRow { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .offer-card.rejected { background: var(--bad); border-color: var(--bad); }
+  .offer-card.accepted { background: var(--good); border-color: var(--good); }
+  .offer-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+  .offer-title { font-size: 14px; font-weight: 700; color: #111; }
+  .offer-pay { font-size: 18px; font-weight: 700; color: #111; }
+  .offer-pay .unit { font-size: 10px; font-weight: 700; color: var(--text-dim); }
+  .offer-route { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .offer-avatar {
+    width: 34px; height: 34px; border-radius: 50%; color: #fff; flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
+  }
+  .offer-where { font-size: 11.5px; color: #333; line-height: 1.4; }
+  .offer-where b { font-weight: 600; font-size: 14px; display: block; }
+  .offer-where .sub { font-size: 10.5px; color: var(--text-dim); margin-top: 2px; }
+  .offer-actions { display: flex; gap: 8px; }
+  .offer-actions .btn {
+    flex: 1; border-radius: 5px; padding: 8px 0; font-size: 12px; font-weight: 700;
+    border: 1px solid; cursor: default;
+  }
+  .offer-actions .reject { background: #fdece5; border-color: var(--bad); color: var(--bad); }
+  .offer-actions .accept { background: #c9e599; border-color: #272e1b; color: #272e1b; font-weight: 600; }
+  /* Decided states print the verdict on the coloured ground. */
+  .offer-verdict { font-size: 11px; font-weight: 700; margin-bottom: 5px; color: #fff; }
+  .offer-verdict .sep { opacity: .8; }
+  .offer-quote { font-size: 11px; color: #fff; opacity: .92; font-style: italic; line-height: 1.5; }
+
+  /* ---- collapsible trips ---------------------------------------------- */
+  .section-toggle {
+    width: 100%; display: flex; align-items: center; justify-content: space-between;
+    background: none; border: none; border-top: 1px solid var(--border-soft);
+    padding: 10px 0; margin-bottom: 10px; cursor: pointer; text-align: left;
+  }
+  .section-toggle:hover { border-color: var(--border); }
+  .section-toggle .name {
+    font-weight: 700; font-size: 11px; letter-spacing: .05em; color: #111;
+  }
+  .section-toggle .arrow { font-size: 11px; color: #555; }
+
+  /* ---- the surge pill and its popover ---------------------------------
+     The panel used to be permanently parked in the corner. The design makes
+     it a pill you open, which gives the map back the bottom-right corner it
+     was covering. */
+  #surgePill {
+    position: absolute; right: 407px; bottom: 10px; z-index: 550;
+    display: flex; align-items: center; gap: 6px;
+    background: var(--panel); border: 1px dashed #9aa0ab; border-radius: 999px;
+    padding: 6px 12px; font-size: 11px; font-weight: 700; letter-spacing: .03em;
+    color: #333; cursor: pointer;
+  }
+  #surgePill .i {
+    width: 15px; height: 15px; border-radius: 50%; background: #555b66; color: #fff;
+    font-size: 10px; font-weight: 700; display: flex; align-items: center;
+    justify-content: center; flex: 0 0 auto;
+  }
+  #surgePill.on { border-style: solid; border-color: var(--accent-fixed); color: #c2660f; }
+
+  /* ---- the timeline, on its own row above the controls ---------------- */
+  #timelineRow {
+    flex: 0 0 26px; height: 26px; display: flex; align-items: center; gap: 10px;
+    padding: 0 14px; border-top: 1px solid var(--border-soft);
+  }
+  #timelineRow .cue { font-size: 10.5px; color: #333; }
+
+  #transport {
+    flex: 0 0 auto; border-top: 1px solid var(--border-soft); background: var(--panel);
+  }
+  #scrubRow { display: flex; align-items: center; gap: 10px; flex: 1 1 auto; }
   #scrub { flex: 1 1 auto; accent-color: var(--accent-smart); }
-  #minuteLabel { font-family: "SF Mono", Consolas, monospace; font-size: 12px; color: var(--text-dim); flex: 0 0 auto; min-width: 130px; text-align: right; }
-  #controlsRow { display: flex; align-items: center; gap: 10px; }
+  #minuteLabel { font-size: 10.5px; color: #555; flex: 0 0 auto; min-width: 120px; text-align: right; }
+  #controlsRow {
+    display: flex; align-items: center; gap: 10px; height: 50px;
+    padding: 0 14px; border-top: 1px solid var(--border-soft);
+  }
   button, select {
-    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+    background: var(--panel); color: #333; border: 1px solid var(--border);
+    border-radius: 6px; padding: 9px 16px; font-size: 13px; cursor: pointer;
   }
   button:hover { border-color: var(--accent-smart); }
   #playBtn { min-width: 74px; font-weight: 700; }
   #daySelect { margin-left: auto; }
   #metricsBtn { margin-left: 8px; }
   #scenarioBtn { margin-left: 8px; }
-  #scenarioBtn.active { background: rgba(255,120,80,0.2); border-color: #ff7850; color: #ff7850; }
-  #forkBtn:disabled { opacity: 0.35; cursor: not-allowed; }
+  #scenarioBtn.active { background: #fdece0; border-color: var(--accent-fixed); color: #c2660f; }
+  #forkBtn:disabled { opacity: 0.35; cursor: not-allowed; border-style: dashed; }
   #forkBtn { margin-left: 8px; }
-  #forkBtn.active { background: rgba(176,107,255,0.2); border-color: var(--accent-fork); color: var(--accent-fork); }
-  #eventTicker { font-size: 11px; color: var(--warn); margin-left: 8px; }
+  #forkBtn.active { background: #f1ecfd; border-color: var(--accent-fork); color: var(--accent-fork); }
+  #eventTicker { font-size: 11px; color: #c2660f; margin-left: 8px; }
 
   /* ---- Load-data overlay ---- */
   #loadOverlay {
@@ -399,14 +525,14 @@
   .mtable .surge { color: var(--accent-fork); }
   .mtable-scroll { max-height: 280px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
   .mempty { padding: 14px; color: var(--text-dim); font-size: 12px; font-style: italic; }
-  #metricsBtn.active { background: rgba(77,163,255,0.18); border-color: var(--accent-smart); color: var(--accent-smart); }
+  #metricsBtn.active { background: #e8f0fe; border-color: var(--accent-smart); color: var(--accent-smart); }
 
   /* The "Inicio 3" / "Final 3" tag beside a stop pin. Deliberately quiet: up
      to twenty of these can be on screen at once inside the visibility window,
      so they have to read as annotation rather than compete with the map. */
   .leaflet-tooltip.stop-tip {
-    background: rgba(11,20,32,0.82); border: none; box-shadow: none;
-    color: #c9d4e8; font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
+    background: rgba(255,255,255,0.92); border: 1px solid var(--border); box-shadow: none;
+    color: #333; font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
     padding: 1px 4px; border-radius: 3px; white-space: nowrap;
   }
   .leaflet-tooltip.stop-tip::before { display: none; }
@@ -429,27 +555,35 @@
         <canvas id="canvasMap"></canvas>
         <div id="netBadge">Offline map: showing a coordinate plot (no tiles)</div>
         <div id="legend"></div>
+        <button id="surgePill" title="Read the app's surge map for this minute (S)">
+          <span class="i">i</span>SURGE &mdash; THE APP&rsquo;S OWN MAP
+        </button>
         <div id="surgePanel"></div>
-      </div>
-    </div>
 
-    <div id="sidebar">
-      <div id="counters"></div>
-      <div id="whyPanel">
-        <h2>Why &mdash; the agent's own reasoning</h2>
-        <div id="decisionCards"></div>
-      </div>
-      <div id="tripsPanel">
-        <h2>Trips &mdash; completed deliveries</h2>
-        <div id="tripCards"></div>
+        <!-- The panels float ON the map now rather than sitting beside it, so
+             they live inside the map wrapper and are positioned against it. -->
+        <div id="sidebar">
+          <div id="counters" class="island"></div>
+          <div id="detailIsland" class="island">
+            <div id="whyPanel"><div id="decisionCards"></div></div>
+            <button id="tripsToggle" class="section-toggle" title="Show or hide the completed deliveries">
+              <span class="name">TRIPS &mdash; COMPLETED DELIVERIES</span>
+              <span class="arrow">&#9662;</span>
+            </button>
+            <div id="tripsPanel"><div id="tripCards"></div></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 
   <div id="transport">
-    <div id="scrubRow">
-      <input type="range" id="scrub" min="0" max="1" step="1" value="0">
-      <span id="minuteLabel">--:--</span>
+    <div id="timelineRow">
+      <span class="cue">&#9654;</span>
+      <div id="scrubRow">
+        <input type="range" id="scrub" min="0" max="1" step="1" value="0">
+        <span id="minuteLabel">--:--</span>
+      </div>
     </div>
     <div id="controlsRow">
       <button id="playBtn">&#9654; Play</button>
@@ -561,7 +695,7 @@
 
   function stopIconSVG(kind, n, ringColor) {
     const fill = kind === "pickup" ? PICKUP_FILL : DROPOFF_FILL;
-    const ring = ringColor || "#0d1117";
+    const ring = ringColor || "#ffffff";
     const label = n == null ? "" : String(n);
     // Two-digit numbers need to shrink or they overflow the shape.
     const fs = label.length > 1 ? 8.5 : 10;
@@ -571,10 +705,10 @@
       ? `<polygon points="12,2 22,20.5 2,20.5" fill="${fill}" stroke="${ring}" stroke-width="2"
            stroke-linejoin="round"/>
          <text x="12" y="18.5" text-anchor="middle" font-size="${fs}" font-weight="700"
-           font-family="monospace" fill="#0b1420">${label}</text>`
+           font-family="monospace" fill="#ffffff">${label}</text>`
       : `<circle cx="12" cy="12" r="9.5" fill="${fill}" stroke="${ring}" stroke-width="2"/>
          <text x="12" y="15.5" text-anchor="middle" font-size="${fs}" font-weight="700"
-           font-family="monospace" fill="#0b1420">${label}</text>`;
+           font-family="monospace" fill="#ffffff">${label}</text>`;
     return `<svg width="24" height="24" viewBox="0 0 24 24">${body}</svg>`;
   }
 
@@ -617,7 +751,7 @@
     // The panel swatch shows the colour at full strength: at 0.16 alpha over
     // a dark card it would be invisible, and the point of the swatch is to
     // let someone match a row to a patch on the map.
-    return s.opacity > 0 ? s.color : "#3a4560";
+    return s.opacity > 0 ? s.color : "#c3c7ce";
   }
 
   // A cell id is not a place. Naming the hot zone by the nearest thing the
@@ -721,6 +855,9 @@
         activity: c.activity,
         earnings_mxn: c.earnings_mxn,
         km_traveled: c.km_traveled,
+        // Needed by the Time-on-shift block. Its absence did not throw: the
+        // block simply returned "" for every minute and rendered nothing.
+        minutes_elapsed: c.minutes_elapsed,
         minutes_idle: c.minutes_idle,
         deliveries_completed: c.deliveries_completed,
         delivered: c.delivered,
@@ -962,7 +1099,7 @@
         let m = couriers.get(laneKey);
         if (!m) {
           m = L.circleMarker([lat, lon], {
-            radius: 8, color: "#0d1117", weight: 2, fillColor: color, fillOpacity: 1,
+            radius: 8, color: "#ffffff", weight: 2.5, fillColor: color, fillOpacity: 1,
           }).addTo(map);
           // Lane A's tooltip sits above its marker, lane B's below -- the two
           // couriers start at the same depot, so without this both labels
@@ -998,7 +1135,7 @@
         if (lat == null || lon == null) return;
         const icon = L.divIcon({
           html: `<div style="width:22px;height:22px;border-radius:50%;background:#ffcc4d;` +
-            `border:2px solid #0d1117;box-shadow:0 0 6px rgba(0,0,0,0.6);` +
+            `border:2px solid #ffffff;box-shadow:0 1px 4px rgba(20,20,30,0.35);` +
             `display:flex;align-items:center;justify-content:center;font-size:13px;">&#9888;</div>`,
           className: "", iconSize: [22, 22], iconAnchor: [11, 11],
         });
@@ -1039,12 +1176,12 @@
     }
 
     function redraw() {
-      ctx.fillStyle = "#0b1420";
+      ctx.fillStyle = "#e9ebe6";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       if (!bounds) return;
 
       ctx.font = "10px monospace";
-      ctx.fillStyle = "#3a4560";
+      ctx.fillStyle = "#8a8d92";
       ctx.fillText("offline coordinate plot (no map tiles)", 10, 16);
 
       if (surgeVisible && surgeStyle) {
@@ -1109,7 +1246,7 @@
       for (const m of pickupDropoffs) {
         const [x, y] = project(m.lat, m.lon);
         ctx.fillStyle = m.kind === "pickup" ? PICKUP_FILL : DROPOFF_FILL;
-        ctx.strokeStyle = m.ringColor || "#0d1117";
+        ctx.strokeStyle = m.ringColor || "#ffffff";
         ctx.lineWidth = 1.5;
         if (m.kind === "pickup") {
           ctx.beginPath();
@@ -1119,13 +1256,13 @@
           ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
         }
         if (m.n != null) {
-          ctx.fillStyle = "#0b1420";
+          ctx.fillStyle = "#ffffff";
           ctx.font = "bold 9px monospace";
           ctx.textAlign = "center";
           ctx.fillText(String(m.n), x, m.kind === "pickup" ? y + 4.5 : y + 3.5);
           ctx.textAlign = "start";
         }
-        ctx.fillStyle = "#c9d4e8";
+        ctx.fillStyle = "#333333";
         ctx.font = "bold 9px monospace";
         ctx.fillText(stopSideLabel(m.kind, m.n), x + 11, y + 3);
       }
@@ -1135,14 +1272,14 @@
         const [x, y] = project(e.lat, e.lon);
         ctx.fillStyle = "#ffcc4d";
         ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = "#0d1117"; ctx.font = "9px monospace"; ctx.fillText("!", x - 2, y + 3);
+        ctx.fillStyle = "#333333"; ctx.font = "9px monospace"; ctx.fillText("!", x - 2, y + 3);
       }
 
       for (const [, c] of couriers) {
         const [x, y] = project(c.lat, c.lon);
         ctx.fillStyle = c.color;
         ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = "#0d1117"; ctx.lineWidth = 2; ctx.stroke();
+        ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.stroke();
         ctx.fillStyle = "#e6ebf5"; ctx.font = "bold 10px monospace";
         ctx.fillText(c.label, x + 9, y - 8);
       }
@@ -1423,6 +1560,10 @@
     // extended to show, and a feature nobody switches on is a feature nobody
     // sees. It still paints nothing on a recording that carries no grid.
     surgeOn: true,
+    // The popover starts open so the first thing a viewer sees is the read,
+    // not an unexplained pill.
+    surgePanelOpen: true,
+    tripsOpen: true,
     _surgeSource: null, // the grid currently built into the map view
     _surgeIdx: -1,      // last styled sample, so playback does not restyle 127 polygons per frame
   };
@@ -1548,10 +1689,10 @@
         <div class="lane-counters">
           <div class="lane-title"><span class="swatch" style="background:${lane.color}"></span>${lane.label}</div>
           <div class="counter-grid">
-            <div class="counter"><div class="value">${s.earnings_mxn.toFixed(0)} <span style="font-size:11px;color:var(--text-dim)">MXN</span></div><div class="label">Earned</div></div>
-            <div class="counter"><div class="value km">${s.km_traveled.toFixed(1)} <span style="font-size:11px;color:var(--text-dim)">km</span></div><div class="label">Driven</div></div>
+            <div class="counter"><div class="value">${s.earnings_mxn.toFixed(0)} <span class="unit">MXN</span></div><div class="label">Earned</div></div>
+            <div class="counter"><div class="value km">${s.km_traveled.toFixed(1)} <span class="unit">km</span></div><div class="label">Driven</div></div>
             <div class="counter"><div class="value">${s.deliveries_completed}</div><div class="label">Deliveries</div></div>
-            <div class="counter"><div class="value">${Math.round(s.minutes_idle)} <span style="font-size:11px;color:var(--text-dim)">min</span></div><div class="label">Idle</div></div>
+            <div class="counter"><div class="value">${Math.round(s.minutes_idle)} <span class="unit">min</span></div><div class="label">Idle</div></div>
           </div>
           ${onShiftHTML(s)}
         </div>`;
@@ -1601,43 +1742,98 @@
       </div>`;
   }
 
-  function decisionCardHTML(lane) {
+  // One offer, drawn the three ways the design draws it: undecided on white,
+  // refused on red, taken on green.
+  //
+  // The state is NOT a click. This is a recording -- the shift already
+  // happened -- so a button that changed the outcome would be theatre. The
+  // card reads the decision the agent actually made as of the scrub minute,
+  // and the Aceptar/Rechazar pair is drawn only while that decision is still
+  // pending, which is exactly how the design gates it.
+  function offerCardHTML(lane) {
     const state = renderStateAt(lane.doc, app.currentMinute).discrete;
-    const d = state.lastDecision;
-    let inner;
+    const live = state.decision;      // a decision made THIS minute
+    const d = state.lastDecision;     // the most recent one, possibly older
+
     if (!d) {
-      inner = `<div class="no-decision">No decision recorded yet this shift.</div>`;
-    } else {
-      const trace = d.trace;
-      const actionClass = d.action === "accept" ? "accept" : (d.action === "reject" ? "reject" : "other");
-      // A reposition is about a PLACE, so it names one. Without this the
-      // head line read "REPOSITION" and the destination existed only inside
-      // the prose summary, which is also the only place the map arrow could
-      // be checked against.
-      const subject = d.order_id
-        ? " " + d.order_id
-        : (d.target_cell ? " &#8594; " + surgeCellShortId(d.target_cell) : "");
-      const headLine = `${d.action.toUpperCase()}${subject} | THRESHOLD ${trace.threshold_mxn_per_hour.toFixed(1)} MXN/h | BINDING ${trace.binding_constraint}`;
-      const stale = !state.decision
-        ? `<div class="stale-note">most recent decision &mdash; made at minute ${trace.minute} (${fmtMinute(trace.minute)})</div>` : "";
-      inner = `
-        <div class="decision-head ${actionClass}">${headLine}</div>
-        ${stale}
-        <div class="decision-summary">&ldquo;${trace.summary}&rdquo;</div>
-        ${trace.considered.map(ev => offerBlockHTML(ev, trace.chosen_order_id)).join("")}
-      `;
+      return `<div class="offer-card"><div class="no-decision">No decision recorded yet this shift.</div></div>`;
     }
+
+    const trace = d.trace;
+    const chosen = trace.considered.find(ev => ev.order_id === trace.chosen_order_id)
+      || trace.considered[0] || null;
+
+    // "Pending" is the minute the offer is on screen and the agent has not
+    // answered yet -- a hold, or a decision that has not landed this minute.
+    const pending = !live || d.action === "hold";
+    if (pending && chosen) {
+      const payout = (chosen.factors || []).find(f => /payout/i.test(f.label || ""));
+      const mxn = payout && payout.delta_mxn != null ? payout.delta_mxn : chosen.expected_net_mxn;
+      return `
+        <div class="offer-card">
+          <div class="offer-head">
+            <div class="offer-title">Entrega</div>
+            <div class="offer-pay">$${Number(mxn).toFixed(2)} <span class="unit">MXN</span></div>
+          </div>
+          <div class="offer-route">
+            <div class="offer-avatar" style="background:${lane.color}">${lane.initial}</div>
+            <div class="offer-where">
+              <b>${chosen.order_id || "offer"}</b>
+              <div class="sub">${Number(chosen.expected_minutes).toFixed(0)} min &middot; ${Number(chosen.expected_km).toFixed(1)} km</div>
+            </div>
+          </div>
+          <div class="offer-actions">
+            <span class="btn reject">Rechazar</span>
+            <span class="btn accept">Aceptar</span>
+          </div>
+        </div>`;
+    }
+
+    const accepted = d.action === "accept";
+    const cls = accepted ? "accepted" : "rejected";
+    const subject = d.order_id
+      ? " " + d.order_id
+      : (d.target_cell ? " &#8594; " + surgeCellShortId(d.target_cell) : "");
+    const stale = !live
+      ? `<div class="stale-note">most recent decision &mdash; made at minute ${trace.minute} (${fmtMinute(trace.minute)})</div>`
+      : "";
+    return `
+      <div class="offer-card ${cls}">
+        <div class="offer-verdict">
+          ${d.action.toUpperCase()}${subject}
+          <span class="sep">|</span> THRESHOLD ${trace.threshold_mxn_per_hour.toFixed(1)} MXN/h
+          <span class="sep">|</span> BINDING ${trace.binding_constraint}
+        </div>
+        <div class="offer-quote">&ldquo;${trace.summary}&rdquo;</div>
+        ${stale}
+      </div>`;
+  }
+
+  function decisionCardHTML(lane) {
     return `
       <div class="decision-card">
-        <div class="card-title"><span class="swatch" style="background:${lane.color}"></span>${lane.label}</div>
-        ${inner}
+        <div class="lane-title"><span class="swatch" style="background:${lane.color}"></span>${lane.label}</div>
+        ${offerCardHTML(lane)}
+        ${offerFactorsHTML(lane)}
       </div>`;
+  }
+
+  // The score breakdown the old card printed inline. Kept, because it is the
+  // only place the agent's arithmetic is visible, but moved below the offer
+  // card so the design's headline reads first.
+  function offerFactorsHTML(lane) {
+    const state = renderStateAt(lane.doc, app.currentMinute).discrete;
+    const d = state.lastDecision;
+    if (!d || !d.trace.considered.length) return "";
+    return `<div class="offer-factors">` +
+      d.trace.considered.map(ev => offerBlockHTML(ev, d.trace.chosen_order_id)).join("") +
+      `</div>`;
   }
 
   function renderWhyPanel() {
     const lanes = [
-      { doc: laneADoc(), color: laneColor(laneAKey()), label: laneLabel(laneAKey()) },
-      { doc: laneBDoc(), color: laneColor(laneBKey()), label: laneLabel(laneBKey()) },
+      { doc: laneADoc(), color: laneColor(laneAKey()), label: laneLabel(laneAKey()), initial: "S" },
+      { doc: laneBDoc(), color: laneColor(laneBKey()), label: laneLabel(laneBKey()), initial: "F" },
     ];
     document.getElementById("decisionCards").innerHTML = lanes.map(decisionCardHTML).join("");
   }
@@ -1844,8 +2040,10 @@
       mv.clearTarget();
       app._surgeSource = null;
       panel.classList.remove("on");
+      document.getElementById("surgePill").style.display = "none";
       return;
     }
+    document.getElementById("surgePill").style.display = "";
     if (app._surgeSource !== surge) {
       mv.setSurgeGeometry(surge.geom);
       app._surgeSource = surge;
@@ -1876,8 +2074,13 @@
         `heading to ${surgeCellShortId(decision.target_cell)}`, laneColor(laneAKey()));
     }
 
-    panel.classList.toggle("on", app.surgeOn);
-    if (!app.surgeOn) return;
+    // Two separate things, which the old single flag conflated: the LAYER on
+    // the map, and the read-out panel. The design makes the read-out a
+    // popover you open, so the field can be painted without a card parked
+    // over the bottom-right corner of the city.
+    document.getElementById("surgePill").classList.toggle("on", app.surgeOn);
+    panel.classList.toggle("on", app.surgeOn && app.surgePanelOpen);
+    if (!(app.surgeOn && app.surgePanelOpen)) return;
 
     const hot = surge.hottest(idx, 3);
     const aHere = surgeUnder(surge, aState.lat, aState.lon, idx);
@@ -1895,7 +2098,7 @@
             <span class="sp-where">${who.length ? who.join(" + ") + " here" : surgeCellShortId(z.cell)}</span>
           </div>`;
         }).join("")
-      : `<div class="sp-zone" style="color:#6b7891">nothing above ${SURGE_FLOOR.toFixed(2)}x right now</div>`;
+      : `<div class="sp-zone" style="color:var(--text-dim)">nothing above ${SURGE_FLOOR.toFixed(2)}x right now</div>`;
 
     const standing = v => v == null ? "off the surge grid" : `${v.toFixed(2)}x where it stands`;
     const movingLine = moving
@@ -2003,6 +2206,22 @@
     }
     surgeBtn.classList.toggle("active", app.surgeOn);
     surgeBtn.addEventListener("click", () => setSurgeOn(!app.surgeOn));
+
+    // The pill opens and closes the read-out. Clicking it while the layer is
+    // off turns the layer on too, because a viewer reaching for the read is
+    // asking to see the field, not to toggle an invisible one.
+    document.getElementById("surgePill").addEventListener("click", () => {
+      if (!app.surgeOn) { app.surgePanelOpen = true; setSurgeOn(true); return; }
+      app.surgePanelOpen = !app.surgePanelOpen;
+      renderMap();
+    });
+
+    const tripsToggle = document.getElementById("tripsToggle");
+    tripsToggle.addEventListener("click", () => {
+      app.tripsOpen = !app.tripsOpen;
+      tripsToggle.querySelector(".arrow").innerHTML = app.tripsOpen ? "&#9662;" : "&#9656;";
+      document.getElementById("tripsPanel").style.display = app.tripsOpen ? "" : "none";
+    });
 
     document.addEventListener("keydown", e => {
       if (e.key === "Escape") setMetricsOpen(false);
@@ -2122,7 +2341,7 @@
     ["to_customer", "To customer", "#3ddc84"],
     ["repositioning", "Repositioning", "#b06bff"],
     ["refuelling", "Refuelling", "#ff5d6c"],
-    ["idle", "Idle", "#4a5568"],
+    ["idle", "Idle", "#c3c7ce"],
   ];
 
   function laneMetrics(doc, uptoMinute) {
