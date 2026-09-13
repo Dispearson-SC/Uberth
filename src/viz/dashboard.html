@@ -132,12 +132,6 @@
   #surgePanel .sp-here { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--border); }
   #surgePanel .sp-here div { margin: 2px 0; }
   #surgePanel .sp-move { color: var(--accent-smart); font-weight: 700; }
-  /* The line that stops a viewer inferring a causal link the decision trace
-     does not support. It is small, but it is not optional. */
-  #surgePanel .sp-note {
-    margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--border);
-    color: var(--text-dim); font-size: 10px; line-height: 1.35;
-  }
   #surgeBtn.active { background: rgba(255,107,44,0.18); border-color: #ff6b2c; color: #ff9a5c; }
 
   #netBadge {
@@ -1541,9 +1535,10 @@
     // extended to show, and a feature nobody switches on is a feature nobody
     // sees. It still paints nothing on a recording that carries no grid.
     surgeOn: true,
-    // The popover starts open so the first thing a viewer sees is the read,
-    // not an unexplained pill.
-    surgePanelOpen: true,
+    // Folded by default. The pill names itself, so an unopened read-out is
+    // not a mystery, and the corner of the map it was covering is the busiest
+    // part of the city on most of these recordings.
+    surgePanelOpen: false,
     tripsOpen: true,
     factorsOpen: {},   // lane key -> whether its score breakdown is unfolded
     _surgeSource: null, // the grid currently built into the map view
@@ -2054,6 +2049,13 @@
     const aName = laneShortName(laneAKey());
     const bName = laneShortName(laneBKey());
 
+    // NOTE, formerly printed in this panel and removed on request: this layer
+    // is what the APP DISPLAYS, not what the agent optimises. The agent
+    // repositions on its own believed demand per cell and sees only a
+    // per-offer surge flag, so a courier moving toward a hot cell here is a
+    // coincidence of the two until the Why panel says otherwise. Anything
+    // that wants to claim the layer explains the movement has to check the
+    // decision trace first. Also recorded in `SurgeGridRecord`'s docstring.
     const zones = hot.length
       ? hot.map(z => {
           const who = [];
@@ -2082,12 +2084,6 @@
         <div><b>${aName}</b> &middot; ${standing(aHere && aHere.value)}</div>
         <div><b>${bName}</b> &middot; ${standing(bHere && bHere.value)}</div>
         ${movingLine}
-      </div>
-      <div class="sp-note">
-        This is what the app displays, not what the agent optimises. It
-        repositions on its own believed DEMAND per cell and sees only a
-        per-offer surge flag &mdash; read the Why panel for the move it
-        actually made.
       </div>
     `;
   }
